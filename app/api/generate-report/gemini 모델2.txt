@@ -1,0 +1,39 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  font-family: 'Inter', system-ui, sans-serif;
+  background: #05080f;           /* 더 깊고 고급스러운 블랙 */
+  color: #e2e8f0;
+}
+
+/* Glass 효과 대폭 강화 */
+.glass {
+  background: rgba(5, 8, 15, 0.96);
+  backdrop-filter: blur(42px);
+  border: 1px solid rgba(103, 232, 249, 0.18);
+  box-shadow: 
+    0 30px 90px -20px rgba(0, 0, 0, 0.85),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.06);
+  border-radius: 20px;
+}
+
+/* Hover Glow 더 세련되게 */
+.teal-glow {
+  transition: all 0.45s cubic-bezier(0.23, 1, 0.32, 1);
+}
+.teal-glow:hover {
+  box-shadow: 0 0 65px rgba(103, 232, 249, 0.65);
+  transform: translateY(-5px);
+  border-color: rgba(103, 232, 249, 0.45);
+}
+
+.warm-accent { color: #fcd34d; }
+.purple-warm { color: #c084fc; }
+
+/* 제목 더 고급스럽게 */
+h1 {
+  color: #67e8f9;
+  text-shadow: 0 0 40px rgba(103, 232, 249, 0.5);
+}

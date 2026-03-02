@@ -16,8 +16,8 @@ export async function POST(req: NextRequest) {
 
     let model;
 
-    // ==================== Gemini 자동 선택 로직 ====================
     if (preferredLLM === 'gemini' || !preferredLLM) {
+      // ==================== Gemini 자동 선택 로직 ====================
       const geminiPriority = [
         'gemini-2.5-flash',
         'gemini-2.5-pro',
@@ -35,20 +35,26 @@ export async function POST(req: NextRequest) {
       for (const modelId of geminiPriority) {
         try {
           const testModel = google(modelId);
-          await generateText({ model: testModel, prompt: 'Hello' });
+          // 테스트 호출 (간단한 프롬프트로 실제 작동 여부 확인)
+          await generateText({
+            model: testModel,
+            prompt: 'Hello',
+          });
           selectedModelId = modelId;
           console.log(`✅ Gemini 자동 선택 성공: ${modelId}`);
           break;
         } catch (e) {
-          console.log(`❌ ${modelId} 실패 → 다음 모델 시도`);
+          console.log(`❌ ${modelId} 실패, 다음 모델 시도...`);
         }
       }
 
-      if (!selectedModelId) throw new Error('사용 가능한 Gemini 모델을 찾을 수 없습니다.');
+      if (!selectedModelId) {
+        throw new Error('사용 가능한 Gemini 모델을 찾을 수 없습니다.');
+      }
+
       model = google(selectedModelId);
-    } 
-    // Grok, Claude, GPT는 기존 로직 그대로
-    else {
+    } else {
+      // Grok, Claude, GPT는 기존 로직 그대로
       type ModelKey = 'grok' | 'gpt' | 'claude';
       const modelMap: Record<ModelKey, any> = {
         grok: require('@ai-sdk/xai').xai('grok-4.2'),
@@ -66,22 +72,10 @@ export async function POST(req: NextRequest) {
       prompt: `Reference Date: ${new Date().toISOString().split('T')[0]}\nCompany: ${ticker || companyName}\nOutput strictly as JSON.`,
     });
 
-    // === JSON 정리 함수 (Gemini 코드블록 제거) ===
-    let cleanText = text.trim();
-    // ```json
-    cleanText = cleanText.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```\s*$/i, '').trim();
-
-    let reportJson;
-    try {
-      reportJson = JSON.parse(cleanText);
-    } catch (parseErr) {
-      console.error('JSON 파싱 실패, 원본:', cleanText);
-      throw new Error('모델이 올바른 JSON을 반환하지 않았습니다.');
-    }
-
+    let reportJson = JSON.parse(text);
     reportJson = await insertImagesIntoReport(reportJson);
 
-    // ZIP + Supabase 저장 + Gmail 발송 (기존 로직)
+    // ZIP + Supabase 저장 + Gmail 발송 (기존 로직 그대로)
     const zip = new JSZip();
     zip.file("report.json", JSON.stringify(reportJson, null, 2));
     const zipBlob = await zip.generateAsync({ type: "blob" });
@@ -99,23 +93,23 @@ export async function POST(req: NextRequest) {
       .select()
       .single();
 
-    // Gmail 발송
-    try {
-      const transporter = nodemailer.createTransport({
-        service: 'gmail',
-        auth: { user: process.env.GMAIL_EMAIL, pass: process.env.GMAIL_APP_PASSWORD },
+    // Gmail 발송 (생략 가능)
+    const transporter = nodemailer.createTransport({
+      service: 'gmail',
+      auth: {
+        user: process.env.GMAIL_EMAIL,
+        pass: process.env.GMAIL_APP_PASSWORD,
+      },
+    });
+
+    const userEmail = (await supabase.auth.getUser()).data.user?.email;
+    if (userEmail) {
+      await transporter.sendMail({
+        from: `"Lumina Investment Intelligence" <${process.env.GMAIL_EMAIL}>`,
+        to: userEmail,
+        subject: `[Lumina Investment Intelligence] ${ticker || companyName} 분석 보고서`,
+        html: `<p>보고서가 생성되었습니다.</p><a href="${process.env.NEXT_PUBLIC_BASE_URL}/report/${data.id}">보고서 보기</a>`,
       });
-      const userEmail = (await supabase.auth.getUser()).data.user?.email;
-      if (userEmail) {
-        await transporter.sendMail({
-          from: `"Lumina Investment Intelligence" <${process.env.GMAIL_EMAIL}>`,
-          to: userEmail,
-          subject: `[Lumina Investment Intelligence] ${ticker || companyName} 분석 보고서`,
-          html: `<p>보고서가 생성되었습니다.</p><a href="${process.env.NEXT_PUBLIC_BASE_URL}/report/${data.id}">보고서 보기</a>`,
-        });
-      }
-    } catch (mailErr) {
-      console.error('Gmail 발송 실패 (보고서는 생성됨):', mailErr);
     }
 
     return Response.json({ reportId: data.id, report: reportJson });
