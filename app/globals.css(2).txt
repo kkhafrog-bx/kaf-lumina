@@ -1,0 +1,45 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  font-family: 'Inter', system-ui, sans-serif;
+  background: #05080f;
+  color: #e2e8f0;
+}
+
+.glass {
+  background: rgba(5, 8, 15, 0.95);
+  backdrop-filter: blur(32px);
+  border: 1px solid rgba(103, 232, 249, 0.15);
+  box-shadow: 0 25px 70px -20px rgba(0, 0, 0, 0.7),
+              0 0 0 1px rgba(103, 232, 249, 0.08) inset;
+  border-radius: 20px;
+}
+
+.teal-glow {
+  transition: all 0.4s cubic-bezier(0.23, 1.0, 0.32, 1);
+}
+.teal-glow:hover {
+  box-shadow: 0 0 50px rgba(103, 232, 249, 0.45);
+  transform: translateY(-3px);
+  border-color: rgba(103, 232, 249, 0.35);
+}
+
+.warm-accent { color: #fcd34d; }
+.purple-warm { color: #c084fc; }
+
+/* 더 고급스러운 타이포그래피 */
+h1, h2, h3 {
+  font-weight: 700;
+  letter-spacing: -0.03em;
+}
+
+/* 버튼 등 기본 요소도 더 세련되게 */
+button {
+  transition: all 0.3s ease;
+}
+button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 30px rgba(103, 232, 249, 0.3);
+}
