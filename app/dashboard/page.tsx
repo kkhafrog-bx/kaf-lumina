@@ -1,7 +1,6 @@
 'use client';
 
 import NewReportForm from '@/components/NewReportForm';
-import ReportCard from '@/components/ReportCard';
 
 export default function Dashboard() {
   return (
@@ -10,7 +9,6 @@ export default function Dashboard() {
         Lumina Investment Intelligence
       </h1>
       <NewReportForm />
-      {/* 보고서 리스트는 나중에 추가 */}
     </div>
   );
 }
