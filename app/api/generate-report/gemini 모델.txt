@@ -1,0 +1,11 @@
+
+모델
+Gemini 2.5 Flash
+Gemini 2.5 Pro
+Gemini 2 Flash
+Gemini 2 Flash Exp
+Gemini 2 Flash Lite
+gemini-2.0
+ gemini-1.5-pro
+ gemini-1.5-flash
+ gemini-1.0

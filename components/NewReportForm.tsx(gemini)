@@ -73,7 +73,7 @@ export default function NewReportForm() {
               <SelectItem value="grok">Grok 4.2 (추천)</SelectItem>
               <SelectItem value="gpt">GPT-4o</SelectItem>
               <SelectItem value="claude">Claude 3.5</SelectItem>
-              <SelectItem value="gemini">Gemini 2.5 Flash (자동 선택)</SelectItem> // <SelectItem value="gemini">Gemini 1.5</SelectItem>
+              <SelectItem value="gemini">Gemini 1.5</SelectItem>
             </SelectContent>
           </Select>
         </div>
