@@ -1,45 +1,186 @@
+@import "tailwindcss";
+@plugin "tailwindcss-animate";
+
+@custom-variant dark (&:is(.dark *));
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+/* -------------------- */
+/* Base Typography      */
+/* -------------------- */
+
 body {
   font-family: 'Inter', system-ui, sans-serif;
-  background: #05080f;
-  color: #e2e8f0;
+  background: #0b1220; /* Deep navy */
+  color: #e6edf6;      /* Cool white */
 }
+
+/* -------------------- */
+/* Glass Effect         */
+/* -------------------- */
 
 .glass {
-  background: rgba(5, 8, 15, 0.95);
-  backdrop-filter: blur(32px);
-  border: 1px solid rgba(103, 232, 249, 0.15);
-  box-shadow: 0 25px 70px -20px rgba(0, 0, 0, 0.7),
-              0 0 0 1px rgba(103, 232, 249, 0.08) inset;
-  border-radius: 20px;
+  background: rgba(11, 18, 32, 0.72);
+  backdrop-filter: blur(26px);
+  border: 1px solid rgba(98, 160, 255, 0.18);
+  box-shadow:
+    0 14px 50px -18px rgba(0, 0, 0, 0.75),
+    0 0 0 1px rgba(98, 160, 255, 0.10);
 }
+
+/* -------------------- */
+/* Hover Glow           */
+/* -------------------- */
 
 .teal-glow {
-  transition: all 0.4s cubic-bezier(0.23, 1.0, 0.32, 1);
-}
-.teal-glow:hover {
-  box-shadow: 0 0 50px rgba(103, 232, 249, 0.45);
-  transform: translateY(-3px);
-  border-color: rgba(103, 232, 249, 0.35);
-}
-
-.warm-accent { color: #fcd34d; }
-.purple-warm { color: #c084fc; }
-
-/* 더 고급스러운 타이포그래피 */
-h1, h2, h3 {
-  font-weight: 700;
-  letter-spacing: -0.03em;
-}
-
-/* 버튼 등 기본 요소도 더 세련되게 */
-button {
   transition: all 0.3s ease;
 }
-button:hover {
+
+.teal-glow:hover {
+  box-shadow: 0 0 34px rgba(98, 160, 255, 0.45);
   transform: translateY(-2px);
-  box-shadow: 0 10px 30px rgba(103, 232, 249, 0.3);
+}
+
+/* Accent helpers 유지 */
+.warm-accent { color: #fbbf24; }
+.purple-warm { color: #c084fc; }
+
+/* -------------------- */
+/* Theme Variables      */
+/* -------------------- */
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+  --radius-3xl: calc(var(--radius) + 12px);
+  --radius-4xl: calc(var(--radius) + 16px);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+}
+
+/* -------------------- */
+/* Dark Professional Palette */
+/* -------------------- */
+
+:root {
+  --radius: 0.625rem;
+
+  /* Deep Navy Base */
+  --background: oklch(0.15 0.03 260);
+  --foreground: oklch(0.97 0.01 250);
+
+  --card: oklch(0.18 0.03 260);
+  --card-foreground: oklch(0.97 0.01 250);
+
+  --popover: oklch(0.18 0.03 260);
+  --popover-foreground: oklch(0.97 0.01 250);
+
+  /* Trust Blue Accent */
+  --primary: oklch(0.78 0.12 250);
+  --primary-foreground: oklch(0.16 0.03 260);
+
+  --secondary: oklch(0.23 0.03 260);
+  --secondary-foreground: oklch(0.97 0.01 250);
+
+  --muted: oklch(0.22 0.03 260);
+  --muted-foreground: oklch(0.72 0.03 250);
+
+  --accent: oklch(0.24 0.04 250);
+  --accent-foreground: oklch(0.98 0.01 250);
+
+  --destructive: oklch(0.66 0.19 25);
+
+  --border: oklch(0.30 0.03 260 / 0.55);
+  --input: oklch(0.30 0.03 260 / 0.55);
+  --ring: oklch(0.78 0.12 250 / 0.55);
+
+  --chart-1: oklch(0.74 0.11 250);
+  --chart-2: oklch(0.70 0.09 210);
+  --chart-3: oklch(0.66 0.08 280);
+  --chart-4: oklch(0.72 0.10 170);
+  --chart-5: oklch(0.78 0.12 250);
+
+  --sidebar: oklch(0.16 0.03 260);
+  --sidebar-foreground: oklch(0.97 0.01 250);
+  --sidebar-primary: oklch(0.78 0.12 250);
+  --sidebar-primary-foreground: oklch(0.16 0.03 260);
+  --sidebar-accent: oklch(0.23 0.03 260);
+  --sidebar-accent-foreground: oklch(0.97 0.01 250);
+  --sidebar-border: oklch(0.30 0.03 260 / 0.55);
+  --sidebar-ring: oklch(0.78 0.12 250 / 0.55);
+}
+
+/* Dark mode = 동일 팔레트 유지 */
+
+.dark {
+  --background: oklch(0.15 0.03 260);
+  --foreground: oklch(0.97 0.01 250);
+
+  --card: oklch(0.18 0.03 260);
+  --card-foreground: oklch(0.97 0.01 250);
+
+  --popover: oklch(0.18 0.03 260);
+  --popover-foreground: oklch(0.97 0.01 250);
+
+  --primary: oklch(0.78 0.12 250);
+  --primary-foreground: oklch(0.16 0.03 260);
+
+  --secondary: oklch(0.23 0.03 260);
+  --secondary-foreground: oklch(0.97 0.01 250);
+
+  --muted: oklch(0.22 0.03 260);
+  --muted-foreground: oklch(0.72 0.03 250);
+
+  --accent: oklch(0.24 0.04 250);
+  --accent-foreground: oklch(0.98 0.01 250);
+
+  --destructive: oklch(0.66 0.19 25);
+
+  --border: oklch(0.30 0.03 260 / 0.55);
+  --input: oklch(0.30 0.03 260 / 0.55);
+  --ring: oklch(0.78 0.12 250 / 0.55);
+
+  --sidebar: oklch(0.16 0.03 260);
+  --sidebar-foreground: oklch(0.97 0.01 250);
+  --sidebar-primary: oklch(0.78 0.12 250);
+  --sidebar-primary-foreground: oklch(0.16 0.03 260);
+  --sidebar-accent: oklch(0.23 0.03 260);
+  --sidebar-accent-foreground: oklch(0.97 0.01 250);
+  --sidebar-border: oklch(0.30 0.03 260 / 0.55);
+  --sidebar-ring: oklch(0.78 0.12 250 / 0.55);
 }
