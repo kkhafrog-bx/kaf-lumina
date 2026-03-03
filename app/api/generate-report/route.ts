@@ -1,3 +1,4 @@
+
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
 import { generateText } from 'ai';
@@ -56,6 +57,13 @@ function cleanJson(text: string): string {
 export async function POST(req: NextRequest) {
   console.log("COOKIE NAMES:", req.cookies.getAll().map(c => c.name)); //gpt 요청삽입
   console.log("HAS AUTH COOKIE:", req.cookies.getAll().some(c => c.name.includes("sb-")));  //gpt 요청삽입
+  console.log('=== generate-report start ===');
+  console.log('COOKIE NAMES:', req.cookies.getAll().map(c => c.name));
+  console.log('ENV CHECK:', {
+   url: !!process.env.NEXT_PUBLIC_SUPABASE_URL,
+   anon: !!process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+   base: !!process.env.NEXT_PUBLIC_BASE_URL,
+});
   const { supabase, res } = createSupabaseRouteClient(req);
 
   try {

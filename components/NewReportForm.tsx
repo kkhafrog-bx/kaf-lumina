@@ -11,13 +11,13 @@ import { toast } from 'sonner';
 export default function NewReportForm() {
   const [ticker, setTicker] = useState('');
   const [companyName, setCompanyName] = useState('');
-  const [llm, setLlm] = useState('grok');
+  const [llm, setLlm] = useState<'grok' | 'gpt' | 'claude' | 'gemini'>('grok');
   const [loading, setLoading] = useState(false);
   const router = useRouter();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
+
     if (!ticker) {
       toast.error('티커를 입력해주세요');
       return;
@@ -29,30 +29,31 @@ export default function NewReportForm() {
       const res = await fetch('/api/generate-report', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include', // ✅ 쿠키(세션) 전송
         body: JSON.stringify({ ticker, companyName, preferredLLM: llm }),
-        credentials: 'include',   // ← 필수 (쿠키 전송)
       });
 
-      const raw = await res.text();            // ✅ 먼저 text로 받기
-let data: any = null;
-try {
-  data = raw ? JSON.parse(raw) : null;   // ✅ 비어있으면 null
-} catch {
-  data = { error: raw };                 // ✅ JSON 아니면 그대로 보여주기
-}
+      // ✅ 서버가 500으로 빈 응답을 주더라도 절대 프론트가 죽지 않게 처리
+      const raw = await res.text();
+      let data: any = null;
 
-if (res.ok && data?.reportId) {
-  toast.success('보고서가 생성되었습니다!');
-  router.push(`/report/${data.reportId}`);
-} else {
-  toast.error(data?.error || `보고서 생성 실패 (HTTP ${res.status})`);
-}
+      try {
+        data = raw ? JSON.parse(raw) : null;
+      } catch {
+        data = { error: raw || null };
+      }
 
-      if (res.ok && data.reportId) {
+      if (!res.ok) {
+        console.error('generate-report failed:', { status: res.status, raw });
+        toast.error(data?.error || `보고서 생성 실패 (HTTP ${res.status})`);
+        return;
+      }
+
+      if (data?.reportId) {
         toast.success('보고서가 생성되었습니다!');
         router.push(`/report/${data.reportId}`);
       } else {
-        toast.error(data.error || '보고서 생성 실패');
+        toast.error(data?.error || '보고서 생성 실패');
       }
     } catch (err) {
       console.error(err);
@@ -65,19 +66,33 @@ if (res.ok && data?.reportId) {
   return (
     <form onSubmit={handleSubmit} className="glass p-8 rounded-3xl max-w-2xl mx-auto">
       <h2 className="text-2xl font-bold mb-6 text-center warm-accent">새 보고서 생성</h2>
-      
+
       <div className="space-y-6">
         <div>
           <Label htmlFor="ticker">티커 (예: FYBR 또는 VZ)</Label>
-          <Input id="ticker" value={ticker} onChange={(e) => setTicker(e.target.value)} placeholder="FYBR" />
+          <Input
+            id="ticker"
+            value={ticker}
+            onChange={(e) => setTicker(e.target.value)}
+            placeholder="FYBR"
+            autoComplete="off"
+          />
         </div>
+
         <div>
           <Label htmlFor="companyName">회사명 (선택)</Label>
-          <Input id="companyName" value={companyName} onChange={(e) => setCompanyName(e.target.value)} placeholder="verizon" />
+          <Input
+            id="companyName"
+            value={companyName}
+            onChange={(e) => setCompanyName(e.target.value)}
+            placeholder="verizon"
+            autoComplete="off"
+          />
         </div>
+
         <div>
           <Label>사용할 AI 모델</Label>
-          <Select value={llm} onValueChange={setLlm}>
+          <Select value={llm} onValueChange={(v) => setLlm(v as any)}>
             <SelectTrigger>
               <SelectValue />
             </SelectTrigger>
@@ -90,12 +105,12 @@ if (res.ok && data?.reportId) {
           </Select>
         </div>
 
-        <Button 
-          type="submit" 
+        <Button
+          type="submit"
           className="w-full bg-teal-500 hover:bg-teal-600 py-6 text-lg"
           disabled={loading}
         >
-          {loading ? "보고서 생성 중..." : "보고서 생성하기"}
+          {loading ? '보고서 생성 중...' : '보고서 생성하기'}
         </Button>
       </div>
     </form>
