@@ -44,8 +44,8 @@ async function pickGeminiModelIdOnce(): Promise<string> {
   throw new Error('사용 가능한 Gemini 모델을 찾을 수 없습니다.');
 }
 
-// ==================== JSON 처리 유틸 ====================
-function stripCodeFences(text: string): string {
+// ==================== JSON 정리/파싱 강화 ====================
+function stripCodeFence(text: string): string {
   return text
     .trim()
     .replace(/^```json\s*/i, '')
@@ -54,18 +54,27 @@ function stripCodeFences(text: string): string {
     .trim();
 }
 
-/**
- * 모델이 앞뒤로 설명/문장을 붙여도,
- * 가장 첫번째 "{" 부터 마지막 "}" 까지 잘라서 JSON 후보를 추출.
- */
-function extractFirstJsonObject(text: string): string | null {
-  const first = text.indexOf('{');
-  const last = text.lastIndexOf('}');
-  if (first === -1 || last === -1 || last <= first) return null;
-  return text.slice(first, last + 1);
+function extractFirstJsonObject(text: string): string {
+  const s = stripCodeFence(text);
+
+  const first = s.indexOf('{');
+  const last = s.lastIndexOf('}');
+  if (first === -1 || last === -1 || last <= first) return s;
+
+  return s.slice(first, last + 1).trim();
 }
 
-// ==================== Report JSON 강제 정규화(저장 안정화) ====================
+function parseJsonHard(text: string) {
+  const a = stripCodeFence(text);
+  try {
+    return JSON.parse(a);
+  } catch {
+    const b = extractFirstJsonObject(text);
+    return JSON.parse(b);
+  }
+}
+
+// ==================== Report JSON 강제 정규화 ====================
 type AnyObj = Record<string, any>;
 
 function isPlainObject(v: any): v is AnyObj {
@@ -85,23 +94,18 @@ function toSafeString(v: any): string {
 
 function toStringArray(v: any): string[] {
   if (v == null) return [];
-  if (Array.isArray(v)) {
-    return v.map((x) => toSafeString(x)).map((s) => s.trim()).filter(Boolean);
-  }
+  if (Array.isArray(v)) return v.map((x) => toSafeString(x)).map((s) => s.trim()).filter(Boolean);
+
   if (isPlainObject(v)) {
     return Object.entries(v)
       .map(([k, val]) => `${k}: ${toSafeString(val)}`.trim())
       .filter(Boolean);
   }
+
   const s = toSafeString(v).trim();
   return s ? [s] : [];
 }
 
-/**
- * UI/DB가 절대 깨지지 않게 강제 정규화
- * - overview/financial_summary/valuation/scenario_analysis/should_i_buy: string
- * - key_insights/risks: string[]
- */
 function normalizeReportJson(raw: any) {
   const r: AnyObj = isPlainObject(raw) ? { ...raw } : {};
 
@@ -123,17 +127,53 @@ function normalizeReportJson(raw: any) {
   r.key_insights = toStringArray(r.key_insights);
   r.risks = toStringArray(r.risks);
 
-  // fallback 최소 보장
   if (!r.company && r.ticker) r.company = r.ticker;
   if (!r.ticker && r.company) r.ticker = r.company;
 
-  // overview가 비어있으면 raw 덤프라도 넣어서 UI 크래시 방지
   if (!r.overview && raw != null) r.overview = toSafeString(raw.overview ?? raw).trim();
 
   return r;
 }
 
-// ==================== API ====================
+async function generateJsonWithRetry(args: {
+  model: any;
+  system: string;
+  prompt: string;
+}) {
+  // 1차
+  const first = await generateText({
+    model: args.model,
+    system: args.system,
+    prompt: args.prompt,
+  });
+
+  try {
+    return parseJsonHard(first.text);
+  } catch (e1) {
+    console.error('❌ JSON parse failed (1st). Raw text head:', first.text?.slice(0, 500));
+
+    // 2차: “JSON만” 재출력 강제
+    const retryPrompt =
+      `${args.prompt}\n\n` +
+      `IMPORTANT: Your previous output was not valid JSON.\n` +
+      `Return ONLY a valid JSON object. No markdown, no commentary, no trailing text.\n` +
+      `Ensure it parses with JSON.parse().`;
+
+    const second = await generateText({
+      model: args.model,
+      system: args.system,
+      prompt: retryPrompt,
+    });
+
+    try {
+      return parseJsonHard(second.text);
+    } catch (e2) {
+      console.error('❌ JSON parse failed (2nd). Raw text head:', second.text?.slice(0, 500));
+      throw new Error('모델이 올바른 JSON을 반환하지 않았습니다.');
+    }
+  }
+}
+
 export async function POST(req: NextRequest) {
   const { supabase, headers } = createSupabaseServerClient(req);
 
@@ -146,7 +186,10 @@ export async function POST(req: NextRequest) {
     };
 
     if (!ticker && !companyName) {
-      return NextResponse.json({ error: '티커 또는 회사명이 필요합니다.' }, { status: 400, headers });
+      return NextResponse.json(
+        { error: '티커 또는 회사명이 필요합니다.' },
+        { status: 400, headers }
+      );
     }
 
     // ✅ 로그인 유저 확인(쿠키 기반)
@@ -161,12 +204,10 @@ export async function POST(req: NextRequest) {
       ticker?.includes('.KS') || ticker?.includes('.KQ') || companyName?.includes('주식회사')
         ? 'KR'
         : 'US';
-
     const systemPrompt = market === 'US' ? US_PROMPT : KR_PROMPT;
 
-    // ==================== 모델 선택 ====================
+    // 모델 선택
     let model: any;
-
     if (preferredLLM === 'gemini' || !preferredLLM) {
       const modelId = await pickGeminiModelIdOnce();
       model = google(modelId);
@@ -180,49 +221,36 @@ export async function POST(req: NextRequest) {
       model = modelMap[preferredLLM as ModelKey];
     }
 
-    // ==================== 보고서 생성 ====================
-    const { text } = await generateText({
+    const referenceDate = new Date().toISOString().split('T')[0];
+    const company = ticker || companyName;
+
+    const basePrompt =
+      `Reference Date: ${referenceDate}\n` +
+      `Company: ${company}\n` +
+      `Output strictly as JSON.\n` +
+      `The JSON must include keys: company, ticker, overview, financial_summary, key_insights, risks, valuation, scenario_analysis, should_i_buy.\n` +
+      `No markdown.`;
+
+    // ✅ JSON 생성 + 파싱 재시도
+    let reportJson = await generateJsonWithRetry({
       model,
       system: systemPrompt,
-      prompt: `Reference Date: ${new Date().toISOString().split('T')[0]}
-Company: ${ticker || companyName}
-
-Return ONLY a valid JSON object.
-Do not include markdown.
-Do not include explanations.`,
-      temperature: 0,
+      prompt: basePrompt,
     });
 
-    // 1) 코드펜스 제거
-    const stripped = stripCodeFences(text);
-
-    // 2) JSON 블록 추출
-    const extracted = extractFirstJsonObject(stripped);
-    if (!extracted) {
-      console.error('❌ JSON 블록 추출 실패. 원본:', stripped);
-      throw new Error('모델이 JSON 형식을 반환하지 않았습니다.');
-    }
-
-    // 3) 파싱
-    let reportJson: any;
-    try {
-      reportJson = JSON.parse(extracted);
-    } catch {
-      console.error('❌ JSON 파싱 실패. JSON 후보:', extracted);
-      throw new Error('모델이 올바른 JSON을 반환하지 않았습니다.');
-    }
-
-    // 4) 정규화 → 이미지 → 정규화(2차 안전)
+    // ✅ 저장 전 강제 정규화(React 크래시 방지)
     reportJson = normalizeReportJson(reportJson);
+
+    // 이미지 삽입 후 다시 정규화
     reportJson = await insertImagesIntoReport(reportJson);
     reportJson = normalizeReportJson(reportJson);
 
-    // ==================== ZIP 생성 ====================
+    // ZIP 생성
     const zip = new JSZip();
     zip.file('report.json', JSON.stringify(reportJson, null, 2));
     const zipBytes = await zip.generateAsync({ type: 'uint8array' });
 
-    // ==================== Storage 업로드 ====================
+    // Storage 업로드
     const safeTicker = (ticker || companyName || 'report').replace(/[^a-zA-Z0-9._-]/g, '_');
     const filePath = `${user.id}/${safeTicker}-${Date.now()}.zip`;
 
@@ -232,7 +260,7 @@ Do not include explanations.`,
 
     if (uploadErr) throw uploadErr;
 
-    // ==================== DB 저장 ====================
+    // DB 저장
     const { data: dbData, error: dbErr } = await supabase
       .from('reports')
       .insert({
@@ -247,7 +275,7 @@ Do not include explanations.`,
 
     if (dbErr) throw dbErr;
 
-    // ==================== Gmail 발송(실패해도 무시) ====================
+    // 메일 (실패해도 무시)
     try {
       if (process.env.GMAIL_EMAIL && process.env.GMAIL_APP_PASSWORD && user.email) {
         const transporter = nodemailer.createTransport({
@@ -278,10 +306,7 @@ Do not include explanations.`,
     console.error(err?.stack ?? err);
 
     return NextResponse.json(
-      {
-        ok: false,
-        error: err?.message ?? String(err),
-      },
+      { ok: false, error: err?.message ?? String(err) },
       { status: 500, headers }
     );
   }
