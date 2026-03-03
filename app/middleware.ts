@@ -24,11 +24,13 @@ export async function middleware(req: NextRequest) {
   );
 
   // 중요: 여기 호출이 세션 갱신/쿠키 세팅 트리거가 됨
-  await supabase.auth.getUser();
+  const { data: { user } } = await supabase.auth.getUser();
 
   return res;
 }
 
 export const config = {
-  matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
+  matcher: [
+    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
+  ],
 };
