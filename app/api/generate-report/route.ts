@@ -1,12 +1,12 @@
+// app/api/generate-report/route.ts
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
-import { createClient as createSupabaseJsClient } from '@supabase/supabase-js';
-
 import { generateText } from 'ai';
 import { google } from '@ai-sdk/google';
 import JSZip from 'jszip';
 import nodemailer from 'nodemailer';
 
+import { createSupabaseServerClient } from '@/lib/supabase/server';
 import { US_PROMPT, KR_PROMPT } from '@/lib/prompts';
 import { insertImagesIntoReport } from '@/lib/imageUtils';
 
@@ -54,40 +54,9 @@ function cleanJson(text: string): string {
 }
 
 export async function POST(req: NextRequest) {
+  const { supabase, headers } = createSupabaseServerClient(req);
+
   try {
-    // ✅ 1) Authorization 토큰 확인
-    const authHeader = req.headers.get('authorization') || '';
-    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
-
-    if (!token) {
-      return NextResponse.json({ error: 'Unauthorized (no token)' }, { status: 401 });
-    }
-
-    const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-    const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
-    if (!url || !anon) throw new Error('Supabase env missing');
-
-    // ✅ 2) 토큰을 Supabase 요청에 붙여서 "유저 권한"으로 DB/Storage 접근
-    const supabase = createSupabaseJsClient(url, anon, {
-      global: {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      },
-      auth: {
-        persistSession: false, // 서버에서는 저장할 필요 없음
-        autoRefreshToken: false,
-      },
-    });
-
-    // ✅ 3) 유저 확인
-    const { data: userData, error: userErr } = await supabase.auth.getUser(token);
-    const user = userData?.user;
-
-    if (userErr || !user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
-
     const body = await req.json();
     const { ticker, companyName, preferredLLM } = body as {
       ticker?: string;
@@ -96,19 +65,28 @@ export async function POST(req: NextRequest) {
     };
 
     if (!ticker && !companyName) {
-      return NextResponse.json({ error: '티커 또는 회사명이 필요합니다.' }, { status: 400 });
+      return NextResponse.json(
+        { error: '티커 또는 회사명이 필요합니다.' },
+        { status: 400, headers }
+      );
+    }
+
+    // ✅ 로그인 유저 확인(쿠키 기반)
+    const { data, error: authError } = await supabase.auth.getUser();
+    const user = data?.user;
+
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401, headers });
     }
 
     const market =
       ticker?.includes('.KS') || ticker?.includes('.KQ') || companyName?.includes('주식회사')
         ? 'KR'
         : 'US';
-
     const systemPrompt = market === 'US' ? US_PROMPT : KR_PROMPT;
 
-    // ==================== 모델 선택 ====================
+    // 모델 선택
     let model: any;
-
     if (preferredLLM === 'gemini' || !preferredLLM) {
       const modelId = await pickGeminiModelIdOnce();
       model = google(modelId);
@@ -119,11 +97,10 @@ export async function POST(req: NextRequest) {
         gpt: require('@ai-sdk/openai').openai('gpt-4o'),
         claude: require('@ai-sdk/anthropic').anthropic('claude-3-5-sonnet'),
       };
-      const key = (preferredLLM as ModelKey) || 'grok';
-      model = modelMap[key];
+      model = modelMap[preferredLLM as ModelKey];
     }
 
-    // ==================== 보고서 생성 ====================
+    // 보고서 생성
     const { text } = await generateText({
       model,
       system: systemPrompt,
@@ -138,27 +115,28 @@ export async function POST(req: NextRequest) {
     try {
       reportJson = JSON.parse(cleaned);
     } catch {
+      console.error('❌ JSON 파싱 실패 원본:', cleaned);
       throw new Error('모델이 올바른 JSON을 반환하지 않았습니다.');
     }
 
     reportJson = await insertImagesIntoReport(reportJson);
 
-    // ==================== ZIP 생성 ====================
+    // ZIP 생성
     const zip = new JSZip();
     zip.file('report.json', JSON.stringify(reportJson, null, 2));
     const zipBytes = await zip.generateAsync({ type: 'uint8array' });
 
+    // Storage 업로드
     const safeTicker = (ticker || companyName || 'report').replace(/[^a-zA-Z0-9._-]/g, '_');
     const filePath = `${user.id}/${safeTicker}-${Date.now()}.zip`;
 
-    // ==================== Storage 업로드 ====================
     const { error: uploadErr } = await supabase.storage
       .from('reports')
       .upload(filePath, zipBytes, { contentType: 'application/zip', upsert: true });
 
     if (uploadErr) throw uploadErr;
 
-    // ==================== DB 저장 ====================
+    // DB 저장
     const { data: dbData, error: dbErr } = await supabase
       .from('reports')
       .insert({
@@ -173,7 +151,7 @@ export async function POST(req: NextRequest) {
 
     if (dbErr) throw dbErr;
 
-    // ==================== Gmail 발송(옵션) ====================
+    // 메일 (실패해도 무시)
     try {
       if (process.env.GMAIL_EMAIL && process.env.GMAIL_APP_PASSWORD && user.email) {
         const transporter = nodemailer.createTransport({
@@ -198,9 +176,17 @@ export async function POST(req: NextRequest) {
       console.error('Gmail 발송 실패(무시 가능):', mailErr);
     }
 
-    return NextResponse.json({ reportId: dbData.id, report: reportJson });
+    return NextResponse.json({ reportId: dbData.id, report: reportJson }, { headers });
   } catch (err: any) {
     console.error('🚨 generate-report failed:', err?.message ?? err);
-    return NextResponse.json({ error: err?.message ?? '서버 내부 오류' }, { status: 500 });
+    console.error(err?.stack ?? err);
+
+    return NextResponse.json(
+      {
+        ok: false,
+        error: err?.message ?? String(err),
+      },
+      { status: 500, headers }
+    );
   }
 }
