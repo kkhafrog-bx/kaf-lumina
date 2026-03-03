@@ -4,13 +4,13 @@ import { google } from '@ai-sdk/google';
 import JSZip from 'jszip';
 import nodemailer from 'nodemailer';
 
-import { createSupabaseServerClientFromRequest } from '@/lib/supabase/server';
+import { createSupabaseServerClient } from '@/lib/supabase/server';
 import { US_PROMPT, KR_PROMPT } from '@/lib/prompts';
 import { insertImagesIntoReport } from '@/lib/imageUtils';
 
 export const runtime = 'nodejs';
 
-// ==================== Gemini 자동 선택 (캐시) ====================
+// ==================== Gemini 자동 선택 ====================
 let cachedGeminiModelId: string | null = null;
 
 const GEMINI_PRIORITY = [
@@ -33,7 +33,7 @@ async function pickGeminiModelIdOnce(): Promise<string> {
       const testModel = google(modelId);
       await generateText({ model: testModel, prompt: 'ping', temperature: 0 });
       cachedGeminiModelId = modelId;
-      console.log(`✅ Gemini 자동 선택 성공: ${modelId}`);
+      console.log(`✅ Gemini 선택 성공: ${modelId}`);
       return modelId;
     } catch (e) {
       console.log(`❌ ${modelId} 실패`);
@@ -61,8 +61,8 @@ export async function POST(req: NextRequest) {
       return Response.json({ error: '티커 또는 회사명이 필요합니다.' }, { status: 400 });
     }
 
-    // ✅ 서버에서 로그인 유저 검증 (RLS 적용)
-    const supabase = createSupabaseServerClientFromRequest(req.headers.get('cookie'));
+    // ✅ 서버에서 로그인 유저 검증
+    const supabase = await createSupabaseServerClient();
     const { data: { user }, error: authError } = await supabase.auth.getUser();
 
     if (authError || !user) {
@@ -99,7 +99,7 @@ export async function POST(req: NextRequest) {
     let reportJson = JSON.parse(cleaned);
     reportJson = await insertImagesIntoReport(reportJson);
 
-    // ==================== ZIP + Storage (private) ====================
+    // ==================== ZIP 생성 ====================
     const zip = new JSZip();
     zip.file("report.json", JSON.stringify(reportJson, null, 2));
     const zipBytes = await zip.generateAsync({ type: 'uint8array' });
@@ -107,6 +107,7 @@ export async function POST(req: NextRequest) {
     const safeTicker = (ticker || companyName || 'report').replace(/[^a-zA-Z0-9._-]/g, '_');
     const filePath = `${user.id}/${safeTicker}-${Date.now()}.zip`;
 
+    // ==================== Storage 업로드 ====================
     const { error: uploadErr } = await supabase.storage
       .from('reports')
       .upload(filePath, zipBytes, { contentType: 'application/zip', upsert: true });
@@ -147,7 +148,7 @@ export async function POST(req: NextRequest) {
         html: `<p>보고서가 준비되었습니다.</p><a href="${reportUrl}">바로 보기</a>`,
       });
     } catch (mailErr) {
-      console.error('Gmail 발송 실패 (보고서는 생성됨):', mailErr);
+      console.error('Gmail 발송 실패:', mailErr);
     }
 
     return Response.json({ reportId: dbData.id, report: reportJson });

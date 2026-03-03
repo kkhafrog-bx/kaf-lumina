@@ -24,27 +24,26 @@ export default function NewReportForm() {
     }
 
     setLoading(true);
-    console.log('보고서 생성 시작:', { ticker, companyName, llm });
 
     try {
       const res = await fetch('/api/generate-report', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ticker, companyName, preferredLLM: llm }),
+        credentials: 'include',   // ← 필수 (쿠키 전송)
       });
 
       const data = await res.json();
-      console.log('서버 응답:', data);
 
-      if (data.reportId) {
+      if (res.ok && data.reportId) {
         toast.success('보고서가 생성되었습니다!');
         router.push(`/report/${data.reportId}`);
       } else {
-        toast.error('보고서 생성 실패: ' + (data.error || '알 수 없는 오류'));
+        toast.error(data.error || '보고서 생성 실패');
       }
     } catch (err) {
-      console.error('에러 발생:', err);
-      toast.error('서버 연결 오류가 발생했습니다.');
+      console.error(err);
+      toast.error('서버 연결 오류');
     } finally {
       setLoading(false);
     }
@@ -61,7 +60,7 @@ export default function NewReportForm() {
         </div>
         <div>
           <Label htmlFor="companyName">회사명 (선택)</Label>
-          <Input id="companyName" value={companyName} onChange={(e) => setCompanyName(e.target.value)} placeholder="Frontier Communications" />
+          <Input id="companyName" value={companyName} onChange={(e) => setCompanyName(e.target.value)} placeholder="verizon" />
         </div>
         <div>
           <Label>사용할 AI 모델</Label>
@@ -70,10 +69,10 @@ export default function NewReportForm() {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="grok">Grok 4.2 (추천)</SelectItem>
+              <SelectItem value="grok">Grok 4.2</SelectItem>
               <SelectItem value="gpt">GPT-4o</SelectItem>
               <SelectItem value="claude">Claude 3.5</SelectItem>
-              <SelectItem value="gemini">Gemini 2.5 Flash (자동 선택)</SelectItem>
+              <SelectItem value="gemini">Gemini (자동 선택)</SelectItem>
             </SelectContent>
           </Select>
         </div>
