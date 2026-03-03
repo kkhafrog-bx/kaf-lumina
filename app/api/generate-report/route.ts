@@ -44,13 +44,25 @@ async function pickGeminiModelIdOnce(): Promise<string> {
   throw new Error('사용 가능한 Gemini 모델을 찾을 수 없습니다.');
 }
 
-function cleanJson(text: string): string {
+// ==================== JSON 처리 유틸 ====================
+function stripCodeFences(text: string): string {
   return text
     .trim()
     .replace(/^```json\s*/i, '')
     .replace(/^```\s*/i, '')
     .replace(/```\s*$/i, '')
     .trim();
+}
+
+/**
+ * 모델이 앞뒤로 설명/문장을 붙여도,
+ * 가장 첫번째 "{" 부터 마지막 "}" 까지 잘라서 JSON 후보를 추출.
+ */
+function extractFirstJsonObject(text: string): string | null {
+  const first = text.indexOf('{');
+  const last = text.lastIndexOf('}');
+  if (first === -1 || last === -1 || last <= first) return null;
+  return text.slice(first, last + 1);
 }
 
 // ==================== Report JSON 강제 정규화(저장 안정화) ====================
@@ -64,7 +76,6 @@ function toSafeString(v: any): string {
   if (v == null) return '';
   if (typeof v === 'string') return v;
   if (typeof v === 'number' || typeof v === 'boolean') return String(v);
-
   try {
     return JSON.stringify(v, null, 2);
   } catch {
@@ -74,31 +85,29 @@ function toSafeString(v: any): string {
 
 function toStringArray(v: any): string[] {
   if (v == null) return [];
-  if (Array.isArray(v)) return v.map((x) => toSafeString(x)).map((s) => s.trim()).filter(Boolean);
-
+  if (Array.isArray(v)) {
+    return v.map((x) => toSafeString(x)).map((s) => s.trim()).filter(Boolean);
+  }
   if (isPlainObject(v)) {
     return Object.entries(v)
       .map(([k, val]) => `${k}: ${toSafeString(val)}`.trim())
       .filter(Boolean);
   }
-
   const s = toSafeString(v).trim();
   return s ? [s] : [];
 }
 
 /**
- * LLM이 schema를 어겨도 저장/표시가 절대 깨지지 않게 강제 정규화
- * - overview/financial_summary/valuation/scenario_analysis/should_i_buy: 항상 string
- * - key_insights/risks: 항상 string[]
+ * UI/DB가 절대 깨지지 않게 강제 정규화
+ * - overview/financial_summary/valuation/scenario_analysis/should_i_buy: string
+ * - key_insights/risks: string[]
  */
 function normalizeReportJson(raw: any) {
   const r: AnyObj = isPlainObject(raw) ? { ...raw } : {};
 
-  // 회사/티커 문자열 고정
   r.company = toSafeString(r.company).trim();
   r.ticker = toSafeString(r.ticker).trim();
 
-  // 본문 string 고정
   const STRING_FIELDS = [
     'overview',
     'financial_summary',
@@ -111,20 +120,20 @@ function normalizeReportJson(raw: any) {
     r[f] = toSafeString(r[f]).trim();
   }
 
-  // 리스트 array<string> 고정
   r.key_insights = toStringArray(r.key_insights);
   r.risks = toStringArray(r.risks);
 
-  // 최소 fallback
+  // fallback 최소 보장
   if (!r.company && r.ticker) r.company = r.ticker;
   if (!r.ticker && r.company) r.ticker = r.company;
 
-  // 섹션이 비어있으면 raw 덤프라도 넣어서 UI 크래시 방지(원치 않으면 삭제 가능)
+  // overview가 비어있으면 raw 덤프라도 넣어서 UI 크래시 방지
   if (!r.overview && raw != null) r.overview = toSafeString(raw.overview ?? raw).trim();
 
   return r;
 }
 
+// ==================== API ====================
 export async function POST(req: NextRequest) {
   const { supabase, headers } = createSupabaseServerClient(req);
 
@@ -137,10 +146,7 @@ export async function POST(req: NextRequest) {
     };
 
     if (!ticker && !companyName) {
-      return NextResponse.json(
-        { error: '티커 또는 회사명이 필요합니다.' },
-        { status: 400, headers }
-      );
+      return NextResponse.json({ error: '티커 또는 회사명이 필요합니다.' }, { status: 400, headers });
     }
 
     // ✅ 로그인 유저 확인(쿠키 기반)
@@ -155,10 +161,12 @@ export async function POST(req: NextRequest) {
       ticker?.includes('.KS') || ticker?.includes('.KQ') || companyName?.includes('주식회사')
         ? 'KR'
         : 'US';
+
     const systemPrompt = market === 'US' ? US_PROMPT : KR_PROMPT;
 
-    // 모델 선택
+    // ==================== 모델 선택 ====================
     let model: any;
+
     if (preferredLLM === 'gemini' || !preferredLLM) {
       const modelId = await pickGeminiModelIdOnce();
       model = google(modelId);
@@ -172,40 +180,49 @@ export async function POST(req: NextRequest) {
       model = modelMap[preferredLLM as ModelKey];
     }
 
-    // 보고서 생성
+    // ==================== 보고서 생성 ====================
     const { text } = await generateText({
       model,
       system: systemPrompt,
-      prompt: `Reference Date: ${new Date().toISOString().split('T')[0]}\nCompany: ${
-        ticker || companyName
-      }\nOutput strictly as JSON.`,
+      prompt: `Reference Date: ${new Date().toISOString().split('T')[0]}
+Company: ${ticker || companyName}
+
+Return ONLY a valid JSON object.
+Do not include markdown.
+Do not include explanations.`,
+      temperature: 0,
     });
 
-    const cleaned = cleanJson(text);
+    // 1) 코드펜스 제거
+    const stripped = stripCodeFences(text);
 
+    // 2) JSON 블록 추출
+    const extracted = extractFirstJsonObject(stripped);
+    if (!extracted) {
+      console.error('❌ JSON 블록 추출 실패. 원본:', stripped);
+      throw new Error('모델이 JSON 형식을 반환하지 않았습니다.');
+    }
+
+    // 3) 파싱
     let reportJson: any;
     try {
-      reportJson = JSON.parse(cleaned);
+      reportJson = JSON.parse(extracted);
     } catch {
-      console.error('❌ JSON 파싱 실패 원본:', cleaned);
+      console.error('❌ JSON 파싱 실패. JSON 후보:', extracted);
       throw new Error('모델이 올바른 JSON을 반환하지 않았습니다.');
     }
 
-    // ✅ 저장 전 강제 정규화(React 크래시 방지 핵심)
+    // 4) 정규화 → 이미지 → 정규화(2차 안전)
     reportJson = normalizeReportJson(reportJson);
-
-    // (이미지도 정규화 이후에)
     reportJson = await insertImagesIntoReport(reportJson);
-
-    // ✅ 혹시 imageUtils가 object를 넣어도 다시 한번 고정(완전 안전)
     reportJson = normalizeReportJson(reportJson);
 
-    // ZIP 생성
+    // ==================== ZIP 생성 ====================
     const zip = new JSZip();
     zip.file('report.json', JSON.stringify(reportJson, null, 2));
     const zipBytes = await zip.generateAsync({ type: 'uint8array' });
 
-    // Storage 업로드
+    // ==================== Storage 업로드 ====================
     const safeTicker = (ticker || companyName || 'report').replace(/[^a-zA-Z0-9._-]/g, '_');
     const filePath = `${user.id}/${safeTicker}-${Date.now()}.zip`;
 
@@ -215,7 +232,7 @@ export async function POST(req: NextRequest) {
 
     if (uploadErr) throw uploadErr;
 
-    // DB 저장
+    // ==================== DB 저장 ====================
     const { data: dbData, error: dbErr } = await supabase
       .from('reports')
       .insert({
@@ -230,7 +247,7 @@ export async function POST(req: NextRequest) {
 
     if (dbErr) throw dbErr;
 
-    // 메일 (실패해도 무시)
+    // ==================== Gmail 발송(실패해도 무시) ====================
     try {
       if (process.env.GMAIL_EMAIL && process.env.GMAIL_APP_PASSWORD && user.email) {
         const transporter = nodemailer.createTransport({
