@@ -14,19 +14,137 @@ type ReportRow = {
   notebook_zip_path: string | null;
 };
 
-function isPlainObject(v: unknown): v is Record<string, unknown> {
+function isPlainObject(v: unknown): v is Record<string, any> {
   return v !== null && typeof v === 'object' && !Array.isArray(v);
 }
 
-function toSafeString(v: unknown): string {
+function prettyKey(k: string): string {
+  return String(k || '').replace(/_/g, ' ').trim();
+}
+
+function formatNumber(n: number): string {
+  const s = String(n);
+  const dec = s.includes('.') ? s.split('.')[1].length : 0;
+  const max = Math.min(Math.max(dec, 0), 4); // 소수는 최대 4자리까지만 표시
+  return new Intl.NumberFormat('en-US', { maximumFractionDigits: max }).format(n);
+}
+
+function toDisplayText(v: any): string {
   if (v == null) return '';
+  if (typeof v === 'number') return formatNumber(v);
+  if (typeof v === 'boolean') return v ? 'true' : 'false';
   if (typeof v === 'string') return v;
-  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
-  try {
-    return JSON.stringify(v, null, 2);
-  } catch {
-    return String(v);
+  return ''; // object/array는 별도 렌더
+}
+
+function smartWrapKorean(text: string): string {
+  const t = (text || '').trim();
+  if (!t) return '';
+
+  // 이미 줄바꿈 있으면 그대로
+  if (t.includes('\n')) return t;
+
+  // 문장 단위로 끊어서 줄바꿈(가독성)
+  const parts = t
+    .split(/(?<=다\.)\s+|(?<=\.)\s+|(?<=\!)\s+|(?<=\?)\s+/)
+    .map((x) => x.trim())
+    .filter(Boolean);
+
+  if (parts.length >= 2) return parts.join('\n');
+
+  // 문장 구분이 거의 없으면 길이 기준 강제 줄바꿈
+  const maxLen = 80;
+  if (t.length <= maxLen) return t;
+
+  const words = t.split(' ');
+  let line = '';
+  const out: string[] = [];
+  for (const w of words) {
+    if ((line + ' ' + w).trim().length > maxLen) {
+      out.push(line.trim());
+      line = w;
+    } else {
+      line += ' ' + w;
+    }
   }
+  if (line.trim()) out.push(line.trim());
+  return out.join('\n');
+}
+
+type Row = { label?: string; text: string; kind?: 'divider'; indent?: number };
+
+/**
+ * 재무 데이터처럼 중첩된 객체를 사람이 읽는 형태로 "펼쳐서" 렌더링
+ * - 숫자는 1,000,000 포맷
+ * - 키의 _ 제거
+ * - 큰 문장은 smartWrap
+ */
+function flattenValue(value: unknown, indent = 0): Row[] {
+  if (value == null) return [];
+
+  // primitive
+  if (!isPlainObject(value) && !Array.isArray(value)) {
+    const txt = smartWrapKorean(toDisplayText(value) || String(value));
+    return txt ? [{ text: txt, indent }] : [];
+  }
+
+  // array
+  if (Array.isArray(value)) {
+    const rows: Row[] = [];
+    for (const item of value as any[]) {
+      if (item == null) continue;
+      if (isPlainObject(item) || Array.isArray(item)) {
+        rows.push(...flattenValue(item, indent));
+        rows.push({ text: '', kind: 'divider' });
+      } else {
+        const s = smartWrapKorean(toDisplayText(item) || String(item));
+        if (s) rows.push({ text: `• ${s}`, indent });
+      }
+    }
+    while (rows.length && rows[rows.length - 1].kind === 'divider') rows.pop();
+    return rows;
+  }
+
+  // object
+  const obj = value as Record<string, any>;
+  const rows: Row[] = [];
+
+  // title/description 있으면 그걸 우선 정리
+  const hasTD = typeof obj.title !== 'undefined' || typeof obj.description !== 'undefined';
+  if (hasTD) {
+    const t = smartWrapKorean(String(toDisplayText(obj.title) || obj.title || '').trim());
+    const d = smartWrapKorean(String(toDisplayText(obj.description) || obj.description || '').trim());
+    if (t) rows.push({ label: 'Title', text: t, indent });
+    if (d) rows.push({ label: 'Description', text: d, indent });
+
+    for (const [k, v] of Object.entries(obj)) {
+      if (k === 'title' || k === 'description') continue;
+      rows.push(...flattenValue({ [k]: v }, indent));
+    }
+    return rows;
+  }
+
+  // 일반 object: key별로
+  for (const [k, v] of Object.entries(obj)) {
+    const label = prettyKey(k);
+
+    if (v == null) continue;
+
+    // primitive면 label: text 한 줄
+    if (!isPlainObject(v) && !Array.isArray(v)) {
+      const text = smartWrapKorean(toDisplayText(v) || String(v));
+      if (text) rows.push({ label, text, indent });
+      continue;
+    }
+
+    // nested면 "label"을 한 줄로 먼저 보여주고 내부 들여쓰기
+    rows.push({ text: label, indent, kind: 'divider' });
+    rows.push(...flattenValue(v, indent + 1));
+    rows.push({ text: '', kind: 'divider' });
+  }
+
+  while (rows.length && rows[rows.length - 1].kind === 'divider') rows.pop();
+  return rows;
 }
 
 function titleCaseFirst(s: string) {
@@ -34,73 +152,9 @@ function titleCaseFirst(s: string) {
   return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
 }
 
-function normalizeSectionValue(value: unknown): Array<{ label?: string; text: string }> {
-  if (value == null) return [];
+function Section({ title, value }: { title: string; value: any }) {
+  const rows = useMemo(() => flattenValue(value, 0), [value]);
 
-  // primitive
-  if (!isPlainObject(value) && !Array.isArray(value)) {
-    const s = toSafeString(value).trim();
-    return s ? [{ text: s }] : [];
-  }
-
-  // object
-  if (isPlainObject(value)) {
-    const obj = value as Record<string, unknown>;
-    const out: Array<{ label?: string; text: string }> = [];
-
-    const t = toSafeString(obj.title).trim();
-    const d = toSafeString(obj.description).trim();
-
-    if (t) out.push({ label: 'Title', text: t });
-    if (d) out.push({ label: 'Description', text: d });
-
-    const extraKeys = Object.keys(obj).filter((k) => k !== 'title' && k !== 'description');
-    for (const k of extraKeys) {
-      const s = toSafeString(obj[k]).trim();
-      if (s) out.push({ label: titleCaseFirst(k), text: s });
-    }
-
-    return out;
-  }
-
-  // array
-  if (Array.isArray(value)) {
-    const arr = value as unknown[]; // ✅ TS: iterable 확정
-    const rows: Array<{ label?: string; text: string }> = [];
-
-    for (const item of arr) {
-      if (isPlainObject(item)) {
-        const obj = item as Record<string, unknown>;
-        const t = toSafeString(obj.title).trim();
-        const d = toSafeString(obj.description).trim();
-
-        if (t) rows.push({ label: 'Title', text: t });
-        if (d) rows.push({ label: 'Description', text: d });
-
-        if (t || d) {
-          rows.push({ text: '__DIVIDER__' });
-        } else {
-          const lines = Object.entries(obj)
-            .map(([k, v]) => `${k}: ${toSafeString(v)}`)
-            .join('\n');
-          if (lines.trim()) rows.push({ text: lines });
-          rows.push({ text: '__DIVIDER__' });
-        }
-      } else {
-        const s = toSafeString(item).trim();
-        if (s) rows.push({ text: `• ${s}` });
-      }
-    }
-
-    while (rows.length && rows[rows.length - 1].text === '__DIVIDER__') rows.pop();
-    return rows;
-  }
-
-  return [];
-}
-
-function Section({ title, value }: { title: string; value: unknown }) {
-  const rows = useMemo(() => normalizeSectionValue(value), [value]);
   if (!rows.length) return null;
 
   return (
@@ -114,21 +168,48 @@ function Section({ title, value }: { title: string; value: unknown }) {
 
       <div className="space-y-3">
         {rows.map((r, idx) => {
-          if (r.text === '__DIVIDER__') {
+          // divider는 섹션 헤더/구분선 용도로 사용
+          if (r.kind === 'divider') {
+            // label-only divider: "재무 데이터" 같은 걸 제목처럼 표시
+            if (r.text) {
+              const pad = (r.indent ?? 0) * 16;
+              return (
+                <div key={idx} style={{ paddingLeft: pad }} className="mt-2">
+                  <div className="text-slate-200 font-semibold">{r.text}</div>
+                  <div className="h-px bg-slate-700/60 mt-2" />
+                </div>
+              );
+            }
             return <div key={idx} className="h-px bg-slate-700/60 my-2" />;
           }
 
+          const pad = (r.indent ?? 0) * 16;
+
+          // label 있는 경우: 정렬된 2열 레이아웃
           if (r.label) {
             return (
-              <div key={idx} className="grid grid-cols-[120px_1fr] gap-4 items-start">
-                <div className="text-slate-300 font-semibold">{titleCaseFirst(r.label)}</div>
-                <div className="text-slate-100 whitespace-pre-wrap leading-7">{r.text}</div>
+              <div
+                key={idx}
+                style={{ paddingLeft: pad }}
+                className="grid grid-cols-[160px_1fr] gap-4 items-start"
+              >
+                <div className="text-slate-300 font-semibold">
+                  {titleCaseFirst(prettyKey(r.label))}
+                </div>
+                <div className="text-slate-100 whitespace-pre-wrap leading-7">
+                  {r.text}
+                </div>
               </div>
             );
           }
 
+          // label 없는 경우: 일반 문단
           return (
-            <div key={idx} className="text-slate-100 whitespace-pre-wrap leading-7">
+            <div
+              key={idx}
+              style={{ paddingLeft: pad }}
+              className="text-slate-100 whitespace-pre-wrap leading-7"
+            >
               {r.text}
             </div>
           );
@@ -160,7 +241,11 @@ export default function ReportPage() {
         return;
       }
 
-      const { data, error } = await supabase.from('reports').select('*').eq('id', reportId).single();
+      const { data, error } = await supabase
+        .from('reports')
+        .select('*')
+        .eq('id', reportId)
+        .single();
 
       if (error || !data) {
         setError('보고서를 찾을 수 없습니다.');
@@ -210,7 +295,7 @@ export default function ReportPage() {
     );
   }
 
-  const rj: any = report.report_json ?? {};
+  const rj = report.report_json ?? {};
 
   return (
     <div className="min-h-screen bg-[#0b1222] p-6">
@@ -218,7 +303,7 @@ export default function ReportPage() {
         <div className="mb-8 flex items-start justify-between gap-4">
           <div>
             <h1 className="text-3xl md:text-4xl font-bold text-teal-300">
-              {toSafeString(report.ticker || rj.ticker || rj.company || 'Report')}
+              {String(report.ticker || rj.ticker || rj.company || 'Report')}
             </h1>
             <div className="text-slate-400 mt-2">
               {report.market ? `Market: ${report.market}` : null}
@@ -234,7 +319,6 @@ export default function ReportPage() {
             >
               {downloading === 'pdf' ? 'PDF 생성 중…' : 'PDF 다운로드'}
             </button>
-
             <button
               onClick={onDownloadZip}
               className="px-4 py-2 rounded-xl border border-slate-600 text-slate-200 hover:bg-slate-800 disabled:opacity-60"
