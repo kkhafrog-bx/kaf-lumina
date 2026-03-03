@@ -182,16 +182,16 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ reportId: dbData.id, report: reportJson }, { headers: res.headers });
   } catch (err: any) {
-    console.error('🚨 generate-report failed:', err?.message ?? err);
-    console.error(err?.stack);
+  console.error('🚨 generate-report failed:', err?.message ?? err);
+  console.error(err?.stack ?? err);
 
-    return NextResponse.json(
-      {
-        ok: false,
-        error: err?.message ?? String(err),
-        stack: process.env.NODE_ENV === 'development' ? err?.stack : undefined,
-      },
-      { status: 500, headers: res.headers }
-    );
-  }
+  return NextResponse.json(
+    {
+      ok: false,
+      error: err?.message ?? String(err),
+      stack: process.env.NODE_ENV === 'development' ? (err?.stack ?? null) : undefined,
+    },
+    { status: 500, headers: res.headers }
+  );
+}
 }

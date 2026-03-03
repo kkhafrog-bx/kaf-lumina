@@ -33,7 +33,20 @@ export default function NewReportForm() {
         credentials: 'include',   // ← 필수 (쿠키 전송)
       });
 
-      const data = await res.json();
+      const raw = await res.text();            // ✅ 먼저 text로 받기
+let data: any = null;
+try {
+  data = raw ? JSON.parse(raw) : null;   // ✅ 비어있으면 null
+} catch {
+  data = { error: raw };                 // ✅ JSON 아니면 그대로 보여주기
+}
+
+if (res.ok && data?.reportId) {
+  toast.success('보고서가 생성되었습니다!');
+  router.push(`/report/${data.reportId}`);
+} else {
+  toast.error(data?.error || `보고서 생성 실패 (HTTP ${res.status})`);
+}
 
       if (res.ok && data.reportId) {
         toast.success('보고서가 생성되었습니다!');
