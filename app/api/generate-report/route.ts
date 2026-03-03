@@ -11,7 +11,7 @@ import { insertImagesIntoReport } from '@/lib/imageUtils';
 
 export const runtime = 'nodejs';
 
-// ==================== Gemini 자동 선택 (캐시) ====================
+// ================= Gemini 자동 선택 =================
 let cachedGeminiModelId: string | null = null;
 
 const GEMINI_PRIORITY = [
@@ -34,12 +34,10 @@ async function pickGeminiModelIdOnce(): Promise<string> {
       const testModel = google(modelId);
       await generateText({ model: testModel, prompt: 'ping', temperature: 0 });
       cachedGeminiModelId = modelId;
-      console.log(`✅ Gemini 선택 성공: ${modelId}`);
       return modelId;
-    } catch (e: any) {
-      console.log(`❌ ${modelId} 실패: ${e?.message ?? e}`);
-    }
+    } catch {}
   }
+
   throw new Error('사용 가능한 Gemini 모델을 찾을 수 없습니다.');
 }
 
@@ -53,38 +51,47 @@ function cleanJson(text: string): string {
 }
 
 export async function POST(req: NextRequest) {
+  const { supabase, res } = createSupabaseRouteClient(req);
+
   try {
-    const body = (await req.json()) as {
+    const body = await req.json();
+    const { ticker, companyName, preferredLLM } = body as {
       ticker?: string;
       companyName?: string;
       preferredLLM?: 'gemini' | 'grok' | 'gpt' | 'claude';
     };
 
-    const { ticker, companyName, preferredLLM } = body;
-
     if (!ticker && !companyName) {
-      return NextResponse.json({ error: '티커 또는 회사명이 필요합니다.' }, { status: 400 });
+      return NextResponse.json(
+        { error: '티커 또는 회사명이 필요합니다.' },
+        { status: 400, headers: res.headers }
+      );
     }
 
-    // ✅ App Route용 Supabase Server Client (NextResponse.next() 없음)
-    const { supabase } = createSupabaseRouteClient(req);
+    // ===== 로그인 확인 =====
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
 
-    // ✅ 서버에서 로그인 유저 검증
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
     if (authError || !user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401, headers: res.headers }
+      );
     }
 
     const market =
       ticker?.includes('.KS') || ticker?.includes('.KQ') || companyName?.includes('주식회사')
         ? 'KR'
         : 'US';
+
     const systemPrompt = market === 'US' ? US_PROMPT : KR_PROMPT;
 
-    // ==================== 모델 선택 ====================
+    // ===== 모델 선택 =====
     let model: any;
 
-    if (preferredLLM === 'gemini' || !preferredLLM) {
+    if (!preferredLLM || preferredLLM === 'gemini') {
       const modelId = await pickGeminiModelIdOnce();
       model = google(modelId);
     } else {
@@ -97,13 +104,13 @@ export async function POST(req: NextRequest) {
       model = modelMap[preferredLLM as ModelKey];
     }
 
-    // ==================== 보고서 생성 ====================
+    // ===== 보고서 생성 =====
     const { text } = await generateText({
       model,
       system: systemPrompt,
-      prompt: `Reference Date: ${new Date().toISOString().split('T')[0]}\nCompany: ${
-        ticker || companyName
-      }\nOutput strictly as JSON.`,
+      prompt: `Reference Date: ${new Date().toISOString().split('T')[0]}
+Company: ${ticker || companyName}
+Output strictly as JSON.`,
     });
 
     const cleaned = cleanJson(text);
@@ -112,16 +119,15 @@ export async function POST(req: NextRequest) {
     try {
       reportJson = JSON.parse(cleaned);
     } catch {
-      console.error('❌ JSON 파싱 실패. 원본:', cleaned);
       return NextResponse.json(
-        { error: '모델이 올바른 JSON을 반환하지 않았습니다.', raw: cleaned },
-        { status: 502 }
+        { error: '모델 JSON 파싱 실패', raw: cleaned },
+        { status: 502, headers: res.headers }
       );
     }
 
     reportJson = await insertImagesIntoReport(reportJson);
 
-    // ==================== ZIP 생성 ====================
+    // ===== ZIP 생성 =====
     const zip = new JSZip();
     zip.file('report.json', JSON.stringify(reportJson, null, 2));
     const zipBytes = await zip.generateAsync({ type: 'uint8array' });
@@ -129,17 +135,22 @@ export async function POST(req: NextRequest) {
     const safeTicker = (ticker || companyName || 'report').replace(/[^a-zA-Z0-9._-]/g, '_');
     const filePath = `${user.id}/${safeTicker}-${Date.now()}.zip`;
 
-    // ==================== Storage 업로드 ====================
+    // ===== Storage 업로드 =====
     const { error: uploadErr } = await supabase.storage
       .from('reports')
-      .upload(filePath, zipBytes, { contentType: 'application/zip', upsert: true });
+      .upload(filePath, zipBytes, {
+        contentType: 'application/zip',
+        upsert: true,
+      });
 
     if (uploadErr) {
-      console.error('❌ Storage upload error:', uploadErr);
-      return NextResponse.json({ error: uploadErr.message }, { status: 500 });
+      return NextResponse.json(
+        { error: uploadErr.message },
+        { status: 500, headers: res.headers }
+      );
     }
 
-    // ==================== DB 저장 ====================
+    // ===== DB 저장 =====
     const { data: dbData, error: dbErr } = await supabase
       .from('reports')
       .insert({
@@ -153,39 +164,20 @@ export async function POST(req: NextRequest) {
       .single();
 
     if (dbErr) {
-      console.error('❌ DB insert error:', dbErr);
-      return NextResponse.json({ error: dbErr.message }, { status: 500 });
+      return NextResponse.json(
+        { error: dbErr.message },
+        { status: 500, headers: res.headers }
+      );
     }
 
-    // ==================== Gmail 발송 (선택) ====================
-    try {
-      if (process.env.GMAIL_EMAIL && process.env.GMAIL_APP_PASSWORD && user.email) {
-        const transporter = nodemailer.createTransport({
-          service: 'gmail',
-          auth: { user: process.env.GMAIL_EMAIL, pass: process.env.GMAIL_APP_PASSWORD },
-        });
-
-        const baseUrl = process.env.NEXT_PUBLIC_BASE_URL ?? '';
-        const reportUrl = `${baseUrl}/report/${dbData.id}`;
-
-        await transporter.sendMail({
-          from: `"Lumina Investment Intelligence" <${process.env.GMAIL_EMAIL}>`,
-          to: user.email,
-          subject: `[Lumina] ${ticker || companyName} 보고서 생성 완료`,
-          html: `<p>보고서가 준비되었습니다.</p><a href="${reportUrl}">바로 보기</a>`,
-        });
-      }
-    } catch (mailErr) {
-      console.error('Gmail 발송 실패(무시 가능):', mailErr);
-    }
-
-    return NextResponse.json({ reportId: dbData.id, report: reportJson });
+    return NextResponse.json(
+      { reportId: dbData.id, report: reportJson },
+      { headers: res.headers }
+    );
   } catch (err: any) {
-    console.error('🚨 generate-report failed:', err?.message ?? err);
-    console.error(err?.stack ?? err);
     return NextResponse.json(
       { error: err?.message ?? String(err) },
-      { status: 500 }
+      { status: 500, headers: res.headers }
     );
   }
 }

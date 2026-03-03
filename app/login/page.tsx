@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { createClient } from '@/lib/supabase';
+import { createSupabaseBrowserClient } from '@/lib/supabase/client';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -12,26 +12,40 @@ export default function LoginPage() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const router = useRouter();
-  const supabase = createClient();
+  const supabase = createSupabaseBrowserClient();
 
-  // 로그인 상태 체크 (GitHub 로그인 후 바로 대시보드로 이동)
+  // 로그인 상태 체크
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session) router.push('/dashboard');
+      if (session) {
+        window.location.href = '/dashboard';
+      }
     });
-  }, [router]);
+  }, []);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
-    if (error) setError(error.message);
-    else router.push('/dashboard');
+
+    const { error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
+
+    if (error) {
+      setError(error.message);
+      return;
+    }
+
+    // ✅ 중요: SSR 쿠키 세션 잡히도록 강제 리로드
+    window.location.href = '/dashboard';
   };
 
   const handleGitHubLogin = async () => {
-    await supabase.auth.signInWithOAuth({ 
+    await supabase.auth.signInWithOAuth({
       provider: 'github',
-      options: { redirectTo: `${window.location.origin}/auth/callback` }
+      options: {
+        redirectTo: `${window.location.origin}/auth/callback`,
+      },
     });
   };
 
@@ -45,19 +59,41 @@ export default function LoginPage() {
         <form onSubmit={handleLogin} className="space-y-6">
           <div>
             <Label htmlFor="email">이메일</Label>
-            <Input id="email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+            <Input
+              id="email"
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+            />
           </div>
+
           <div>
             <Label htmlFor="password">비밀번호</Label>
-            <Input id="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
+            <Input
+              id="password"
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
           </div>
+
           {error && <p className="text-red-400 text-sm">{error}</p>}
-          <Button type="submit" className="w-full bg-teal-500 hover:bg-teal-600 py-6 text-lg">이메일로 로그인</Button>
+
+          <Button
+            type="submit"
+            className="w-full bg-teal-500 hover:bg-teal-600 py-6 text-lg"
+          >
+            이메일로 로그인
+          </Button>
         </form>
 
         <div className="my-6 text-center text-slate-400">또는</div>
 
-        <Button onClick={handleGitHubLogin} variant="outline" className="w-full py-6 text-lg bg-black text-white hover:bg-gray-800">
+        <Button
+          onClick={handleGitHubLogin}
+          variant="outline"
+          className="w-full py-6 text-lg bg-black text-white hover:bg-gray-800"
+        >
           GitHub로 로그인
         </Button>
       </div>
