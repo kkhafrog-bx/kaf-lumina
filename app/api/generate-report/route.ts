@@ -53,6 +53,78 @@ function cleanJson(text: string): string {
     .trim();
 }
 
+// ==================== Report JSON 강제 정규화(저장 안정화) ====================
+type AnyObj = Record<string, any>;
+
+function isPlainObject(v: any): v is AnyObj {
+  return v !== null && typeof v === 'object' && !Array.isArray(v);
+}
+
+function toSafeString(v: any): string {
+  if (v == null) return '';
+  if (typeof v === 'string') return v;
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+
+  try {
+    return JSON.stringify(v, null, 2);
+  } catch {
+    return String(v);
+  }
+}
+
+function toStringArray(v: any): string[] {
+  if (v == null) return [];
+  if (Array.isArray(v)) return v.map((x) => toSafeString(x)).map((s) => s.trim()).filter(Boolean);
+
+  if (isPlainObject(v)) {
+    return Object.entries(v)
+      .map(([k, val]) => `${k}: ${toSafeString(val)}`.trim())
+      .filter(Boolean);
+  }
+
+  const s = toSafeString(v).trim();
+  return s ? [s] : [];
+}
+
+/**
+ * LLM이 schema를 어겨도 저장/표시가 절대 깨지지 않게 강제 정규화
+ * - overview/financial_summary/valuation/scenario_analysis/should_i_buy: 항상 string
+ * - key_insights/risks: 항상 string[]
+ */
+function normalizeReportJson(raw: any) {
+  const r: AnyObj = isPlainObject(raw) ? { ...raw } : {};
+
+  // 회사/티커 문자열 고정
+  r.company = toSafeString(r.company).trim();
+  r.ticker = toSafeString(r.ticker).trim();
+
+  // 본문 string 고정
+  const STRING_FIELDS = [
+    'overview',
+    'financial_summary',
+    'valuation',
+    'scenario_analysis',
+    'should_i_buy',
+  ] as const;
+
+  for (const f of STRING_FIELDS) {
+    r[f] = toSafeString(r[f]).trim();
+  }
+
+  // 리스트 array<string> 고정
+  r.key_insights = toStringArray(r.key_insights);
+  r.risks = toStringArray(r.risks);
+
+  // 최소 fallback
+  if (!r.company && r.ticker) r.company = r.ticker;
+  if (!r.ticker && r.company) r.ticker = r.company;
+
+  // 섹션이 비어있으면 raw 덤프라도 넣어서 UI 크래시 방지(원치 않으면 삭제 가능)
+  if (!r.overview && raw != null) r.overview = toSafeString(raw.overview ?? raw).trim();
+
+  return r;
+}
+
 export async function POST(req: NextRequest) {
   const { supabase, headers } = createSupabaseServerClient(req);
 
@@ -119,7 +191,14 @@ export async function POST(req: NextRequest) {
       throw new Error('모델이 올바른 JSON을 반환하지 않았습니다.');
     }
 
+    // ✅ 저장 전 강제 정규화(React 크래시 방지 핵심)
+    reportJson = normalizeReportJson(reportJson);
+
+    // (이미지도 정규화 이후에)
     reportJson = await insertImagesIntoReport(reportJson);
+
+    // ✅ 혹시 imageUtils가 object를 넣어도 다시 한번 고정(완전 안전)
+    reportJson = normalizeReportJson(reportJson);
 
     // ZIP 생성
     const zip = new JSZip();

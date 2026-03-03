@@ -1,40 +1,78 @@
 'use client';
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { LineChart, Line, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
-import Image from 'next/image';
+
+type AnyObj = Record<string, any>;
+
+function isPlainObject(v: any): v is AnyObj {
+  return v !== null && typeof v === 'object' && !Array.isArray(v);
+}
+
+function renderAny(value: any) {
+  if (value == null) return <span className="text-slate-400">-</span>;
+
+  // string/number/boolean
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return <p className="whitespace-pre-wrap leading-7">{String(value)}</p>;
+  }
+
+  // array
+  if (Array.isArray(value)) {
+    return (
+      <ul className="list-disc pl-6 space-y-2">
+        {value.map((item, idx) => (
+          <li key={idx} className="whitespace-pre-wrap leading-7">
+            {typeof item === 'string' ? item : JSON.stringify(item, null, 2)}
+          </li>
+        ))}
+      </ul>
+    );
+  }
+
+  // object
+  if (isPlainObject(value)) {
+    return (
+      <div className="space-y-4">
+        {Object.entries(value).map(([k, v]) => (
+          <div key={k} className="rounded-2xl border border-white/10 p-4 bg-white/5">
+            <div className="font-semibold text-teal-300 mb-2">{k}</div>
+            <div className="text-slate-200">{renderAny(v)}</div>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  // fallback
+  return <pre className="whitespace-pre-wrap">{JSON.stringify(value, null, 2)}</pre>;
+}
 
 export default function ReportTabs({ report }: { report: any }) {
-  const tabs = [
-    { value: 'overview', label: '개요' },
-    { value: 'financial_summary', label: '재무 요약' },
-    { value: 'key_insights', label: '투자 인사이트' },
-    { value: 'risks', label: '리스크' },
-    { value: 'valuation', label: '밸류에이션' },
-    { value: 'scenario_analysis', label: '시나리오' },
-    { value: 'should_i_buy', label: '매수 추천' },
-  ];
+  const sections = [
+    { key: 'overview', label: 'Overview' },
+    { key: 'financial_summary', label: 'Financial' },
+    { key: 'key_insights', label: 'Insights' },
+    { key: 'risks', label: 'Risks' },
+    { key: 'valuation', label: 'Valuation' },
+    { key: 'scenario_analysis', label: 'Scenario' },
+    { key: 'should_i_buy', label: 'Decision' },
+  ] as const;
 
   return (
     <Tabs defaultValue="overview" className="w-full">
-      <TabsList className="glass flex w-full justify-start mb-8 p-1 rounded-2xl overflow-x-auto">
-        {tabs.map((tab) => (
-          <TabsTrigger key={tab.value} value={tab.value} className="px-6 py-3 data-[state=active]:bg-teal-500/20">
-            {tab.label}
+      <TabsList className="flex flex-wrap gap-2 bg-white/5">
+        {sections.map((s) => (
+          <TabsTrigger key={s.key} value={s.key}>
+            {s.label}
           </TabsTrigger>
         ))}
       </TabsList>
 
-      {tabs.map((tab) => (
-        <TabsContent key={tab.value} value={tab.value}>
-          <div className="glass p-8 rounded-3xl">
-            <h2 className="text-3xl font-bold mb-6 warm-accent">{tab.label}</h2>
-            <div className="text-slate-300 leading-relaxed whitespace-pre-wrap">
-              {report[tab.value]}
-            </div>
-            {report[`${tab.value}_image`] && (
-              <Image src={report[`${tab.value}_image`]} alt="" width={900} height={500} className="mt-6 rounded-xl" />
-            )}
+      {sections.map((s) => (
+        <TabsContent key={s.key} value={s.key} className="mt-6">
+          <div className="glass rounded-3xl p-6">
+            <div className="text-lg font-bold text-teal-300 mb-4">{s.label}</div>
+            {renderAny(report?.[s.key])}
           </div>
         </TabsContent>
       ))}
