@@ -4,7 +4,7 @@ import { google } from '@ai-sdk/google';
 import JSZip from 'jszip';
 import nodemailer from 'nodemailer';
 
-import { createClient } from '@/lib/supabase';
+import { createSupabaseServerClient } from '@/lib/supabase/server';
 import { US_PROMPT, KR_PROMPT } from '@/lib/prompts';
 import { insertImagesIntoReport } from '@/lib/imageUtils';
 
@@ -61,6 +61,14 @@ export async function POST(req: NextRequest) {
       return Response.json({ error: '티커 또는 회사명이 필요합니다.' }, { status: 400 });
     }
 
+    // ✅ 서버에서 로그인 유저 검증
+    const supabase = await createSupabaseServerClient();
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return Response.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
     const market = ticker?.includes('.KS') || companyName?.includes('주식회사') ? 'KR' : 'US';
     const systemPrompt = market === 'US' ? US_PROMPT : KR_PROMPT;
 
@@ -97,14 +105,20 @@ export async function POST(req: NextRequest) {
     const zipBytes = await zip.generateAsync({ type: 'uint8array' });
 
     const safeTicker = (ticker || companyName || 'report').replace(/[^a-zA-Z0-9._-]/g, '_');
-    const filePath = `temp/${safeTicker}-${Date.now()}.zip`;
+    const filePath = `${user.id}/${safeTicker}-${Date.now()}.zip`;
 
-    // ==================== DB 저장 (임시로 user_id null) ====================
-    const supabase = createClient();
+    // ==================== Storage 업로드 ====================
+    const { error: uploadErr } = await supabase.storage
+      .from('reports')
+      .upload(filePath, zipBytes, { contentType: 'application/zip', upsert: true });
+
+    if (uploadErr) throw uploadErr;
+
+    // ==================== DB 저장 ====================
     const { data: dbData, error: dbErr } = await supabase
       .from('reports')
       .insert({
-        user_id: null,                 // ← 임시 null (나중에 수정)
+        user_id: user.id,
         ticker: ticker || null,
         market,
         report_json: reportJson,
@@ -129,7 +143,7 @@ export async function POST(req: NextRequest) {
 
       await transporter.sendMail({
         from: `"Lumina Investment Intelligence" <${process.env.GMAIL_EMAIL}>`,
-        to: process.env.GMAIL_EMAIL,   // 임시로 본인에게 발송
+        to: user.email,
         subject: `[Lumina] ${ticker || companyName} 보고서 생성 완료`,
         html: `<p>보고서가 준비되었습니다.</p><a href="${reportUrl}">바로 보기</a>`,
       });
