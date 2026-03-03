@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { createClient } from '@/lib/supabase';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -14,6 +15,7 @@ export default function NewReportForm() {
   const [llm, setLlm] = useState<'grok' | 'gpt' | 'claude' | 'gemini'>('grok');
   const [loading, setLoading] = useState(false);
   const router = useRouter();
+  const supabase = createClient();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -26,22 +28,27 @@ export default function NewReportForm() {
     setLoading(true);
 
     try {
+      // ✅ 여기 핵심: 브라우저 세션에서 access_token 꺼내서 API로 전달
+      const { data: sessionData } = await supabase.auth.getSession();
+      const accessToken = sessionData.session?.access_token;
+
+      if (!accessToken) {
+        toast.error('로그인이 필요합니다. 다시 로그인해주세요.');
+        router.push('/login');
+        return;
+      }
+
       const res = await fetch('/api/generate-report', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include', // ✅ 쿠키(세션) 전송
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`, // ✅ 쿠키 대신 토큰
+        },
         body: JSON.stringify({ ticker, companyName, preferredLLM: llm }),
       });
 
-      // ✅ 서버가 500으로 빈 응답을 주더라도 절대 프론트가 죽지 않게 처리
       const raw = await res.text();
-      let data: any = null;
-
-      try {
-        data = raw ? JSON.parse(raw) : null;
-      } catch {
-        data = { error: raw || null };
-      }
+      const data = raw ? JSON.parse(raw) : null;
 
       if (!res.ok) {
         console.error('generate-report failed:', { status: res.status, raw });
@@ -105,11 +112,7 @@ export default function NewReportForm() {
           </Select>
         </div>
 
-        <Button
-          type="submit"
-          className="w-full bg-teal-500 hover:bg-teal-600 py-6 text-lg"
-          disabled={loading}
-        >
+        <Button type="submit" className="w-full bg-teal-500 hover:bg-teal-600 py-6 text-lg" disabled={loading}>
           {loading ? '보고서 생성 중...' : '보고서 생성하기'}
         </Button>
       </div>
