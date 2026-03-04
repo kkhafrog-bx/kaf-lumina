@@ -8,29 +8,12 @@ import { createSupabaseServerClient } from '@/lib/supabase/server';
 
 export const runtime = 'nodejs';
 
-type AnyObj = Record<string, any>;
-
-function isPlainObject(v: any): v is AnyObj {
-  return v !== null && typeof v === 'object' && !Array.isArray(v);
-}
-
-function toSafeString(v: any): string {
-  if (v == null) return '';
-  if (typeof v === 'string') return v;
-  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
-  try {
-    return JSON.stringify(v, null, 2);
-  } catch {
-    return String(v);
-  }
-}
-
 function readPublicFile(relPath: string) {
   const abs = path.join(process.cwd(), 'public', relPath);
   return fs.readFileSync(abs);
 }
 
-function makePdfBuffer(args: {
+async function makePdfBuffer(args: {
   reportId: string;
   ticker: string;
   market: string;
@@ -39,9 +22,11 @@ function makePdfBuffer(args: {
 }) {
   const { reportId, ticker, market, createdAtIso, reportJson } = args;
 
-  const fontRegular = path.join(process.cwd(), 'public', 'fonts', 'NotoSansKR-Regular.ttf');
-  const fontBold = path.join(process.cwd(), 'public', 'fonts', 'NotoSansKR-Bold.ttf');
+  // ✅ 폰트는 "파일 경로" 말고 Buffer로 읽어두면 배포 환경에서 더 안전함
+  const fontRegular = readPublicFile('fonts/NotoSansKR-Regular.ttf');
+  const fontBold = readPublicFile('fonts/NotoSansKR-Bold.ttf');
 
+  // ✅ 로고 파일(네가 public/brand/kafcore.png로 맞춰둔 전제)
   const logo = readPublicFile('brand/kafcore.png');
 
   const doc = new PDFDocument({
@@ -50,11 +35,17 @@ function makePdfBuffer(args: {
     bufferPages: true,
   });
 
+  // ✅ 커스텀 폰트 등록
   doc.registerFont('KR', fontRegular);
   doc.registerFont('KR-B', fontBold);
 
+  // ✅ 매우 중요: 첫 text 전에 폰트를 강제로 KR로 고정
+  // (이거 안 하면 pdfkit이 기본 Helvetica를 쓰려다 AFM를 찾고 터질 수 있음)
+  doc.font('KR');
+
   const chunks: Buffer[] = [];
   doc.on('data', (c) => chunks.push(c));
+
   const done = new Promise<Buffer>((resolve, reject) => {
     doc.on('end', () => resolve(Buffer.concat(chunks)));
     doc.on('error', reject);
@@ -64,13 +55,11 @@ function makePdfBuffer(args: {
   const pageH = doc.page.height;
   const marginL = doc.page.margins.left;
   const marginR = doc.page.margins.right;
-  const marginT = doc.page.margins.top;
   const marginB = doc.page.margins.bottom;
 
   const contentW = pageW - marginL - marginR;
 
   const headerH = 70;
-  const footerH = 42;
 
   const ink = '#0B1222';
   const subInk = '#42526B';
@@ -114,22 +103,17 @@ function makePdfBuffer(args: {
       .stroke();
 
     doc.fillColor(subInk).font('KR').fontSize(9);
-    doc.text(
-      `© ${new Date().getFullYear()} KAFCORE`,
-      marginL,
-      y + 10,
-      { width: contentW * 0.7 }
-    );
+    doc.text(`© ${new Date().getFullYear()} KAFCORE`, marginL, y + 10, {
+      width: contentW * 0.7,
+    });
 
-    doc.text(
-      `${pageNum} / ${pageCount}`,
-      marginL,
-      y + 10,
-      { width: contentW, align: 'right' }
-    );
+    doc.text(`${pageNum} / ${pageCount}`, marginL, y + 10, {
+      width: contentW,
+      align: 'right',
+    });
   }
 
-  doc.addPage();
+  // ✅ doc는 생성 시 이미 1페이지가 있음. addPage() 하면 첫 페이지가 빈 페이지로 남을 수 있음.
   drawHeader();
   doc.y = 18 + headerH + 28;
 
@@ -141,12 +125,14 @@ function makePdfBuffer(args: {
   doc.text(`Report ID: ${reportId}`);
   doc.moveDown(1);
 
+  // ✅ 지금은 테스트로 JSON 그대로 찍는 상태
   doc.fillColor(ink).font('KR').fontSize(10);
   doc.text(JSON.stringify(reportJson, null, 2), {
     width: contentW,
     lineGap: 4,
   });
 
+  // ✅ 페이지 수 확정 후 footer
   const range = doc.bufferedPageRange();
   for (let i = 0; i < range.count; i++) {
     doc.switchToPage(i);
@@ -157,7 +143,10 @@ function makePdfBuffer(args: {
   return done;
 }
 
-export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+export async function GET(
+  req: NextRequest,
+  ctx: { params: Promise<{ id: string }> }
+) {
   const { id } = await ctx.params;
 
   const { supabase, headers } = createSupabaseServerClient(req);
@@ -187,6 +176,10 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string 
 
   const resHeaders = new Headers(headers);
   resHeaders.set('Content-Type', 'application/pdf');
-resHeaders.set('Content-Disposition', `attachment; filename="${(report.ticker ?? 'report')}-report.pdf"`);
-return new NextResponse(new Uint8Array(pdfBuffer), { headers: resHeaders });
+
+  const filename = `${(report.ticker ?? 'report').replace(/[^a-zA-Z0-9._-]/g, '_')}-report.pdf`;
+  resHeaders.set('Content-Disposition', `attachment; filename="${filename}"`);
+
+  // ✅ NextResponse body는 Uint8Array로
+  return new NextResponse(new Uint8Array(pdfBuffer), { headers: resHeaders });
 }
