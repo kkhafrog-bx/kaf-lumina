@@ -1,6 +1,6 @@
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
-import { generateObject } from 'ai';
+import { generateObject, generateText } from 'ai';
 import { google } from '@ai-sdk/google';
 import JSZip from 'jszip';
 import { z } from 'zod';
@@ -26,30 +26,31 @@ async function pickGeminiModelIdOnce(): Promise<string> {
   for (const modelId of GEMINI_PRIORITY) {
     try {
       const testModel = google(modelId);
-      await testModel.doGenerate?.({ prompt: 'ping' });
+
+      // 🔥 안전 테스트 (기존 방식으로)
+      await generateText({
+        model: testModel,
+        prompt: 'ping',
+      });
+
       cachedGeminiModelId = modelId;
       console.log(`✅ Gemini 선택: ${modelId}`);
       return modelId;
-    } catch {}
+    } catch (e) {
+      console.log(`❌ ${modelId} 실패`);
+    }
   }
 
   throw new Error('사용 가능한 Gemini 모델 없음');
 }
 
-// ==================== JSON Schema (핵심) ====================
+// ==================== Schema ====================
 const ReportSchema = z.object({
   company: z.string().optional(),
   ticker: z.string().optional(),
-
   overview: z.any(),
-  financial_summary: z.any().optional(),
-  valuation: z.any().optional(),
-  scenario_analysis: z.any().optional(),
-
   key_insights: z.any(),
   risks: z.any(),
-
-  decision: z.any().optional(),
 });
 
 // ==================== API ====================
@@ -67,7 +68,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 로그인 확인
     const { data } = await supabase.auth.getUser();
     const user = data?.user;
 
@@ -88,44 +88,32 @@ export async function POST(req: NextRequest) {
     const modelId = await pickGeminiModelIdOnce();
     const model = google(modelId);
 
-    // ==================== 🔥 핵심: generateObject ====================
-    const { object: reportJson } = await generateObject({
+    // 🔥 핵심: 안정 generateObject
+    const { object } = await generateObject({
       model,
       schema: ReportSchema,
       system: systemPrompt,
-      prompt: `Reference Date: ${new Date().toISOString().split('T')[0]}
-Company: ${ticker || companyName}
-
-Return structured investment report as JSON.`,
-      temperature: 0,
+      prompt: `Company: ${ticker || companyName}
+Return structured JSON.`,
     });
 
-    // 이미지 삽입
-    const finalReport = await insertImagesIntoReport(reportJson);
+    const finalReport = await insertImagesIntoReport(object);
 
-    // ZIP 생성
     const zip = new JSZip();
     zip.file('report.json', JSON.stringify(finalReport, null, 2));
     const zipBytes = await zip.generateAsync({ type: 'uint8array' });
 
-    // 업로드
     const filePath = `${user.id}/${Date.now()}.zip`;
 
-    const { error: uploadErr } = await supabase.storage
+    await supabase.storage
       .from('reports')
-      .upload(filePath, zipBytes, {
-        contentType: 'application/zip',
-        upsert: true,
-      });
+      .upload(filePath, zipBytes, { upsert: true });
 
-    if (uploadErr) throw uploadErr;
-
-    // DB 저장
-    const { data: dbData, error: dbErr } = await supabase
+    const { data: dbData } = await supabase
       .from('reports')
       .insert({
         user_id: user.id,
-        ticker: ticker || null,
+        ticker,
         market,
         report_json: finalReport,
         notebook_zip_path: filePath,
@@ -133,23 +121,15 @@ Return structured investment report as JSON.`,
       .select()
       .single();
 
-    if (dbErr) throw dbErr;
-
     return NextResponse.json(
-      {
-        reportId: dbData.id,
-        report: finalReport,
-      },
+      { reportId: dbData.id, report: finalReport },
       { headers }
     );
   } catch (err: any) {
-    console.error('🚨 generate-report failed:', err);
+    console.error(err);
 
     return NextResponse.json(
-      {
-        ok: false,
-        error: err?.message ?? String(err),
-      },
+      { error: err.message },
       { status: 500 }
     );
   }
