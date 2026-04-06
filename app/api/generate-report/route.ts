@@ -1,9 +1,9 @@
-// app/api/generate-report/route.ts
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
-import { generateText } from 'ai';
+import { generateObject } from 'ai';
 import { google } from '@ai-sdk/google';
 import JSZip from 'jszip';
+import { z } from 'zod';
 
 import { createSupabaseServerClient } from '@/lib/supabase/server';
 import { US_PROMPT, KR_PROMPT } from '@/lib/prompts';
@@ -18,9 +18,6 @@ const GEMINI_PRIORITY = [
   'gemini-2.5-flash',
   'gemini-2.5-pro',
   'gemini-2-flash',
-  'gemini-2-flash-exp',
-  'gemini-2-flash-lite',
-  'gemini-2.0',
 ] as const;
 
 async function pickGeminiModelIdOnce(): Promise<string> {
@@ -29,24 +26,33 @@ async function pickGeminiModelIdOnce(): Promise<string> {
   for (const modelId of GEMINI_PRIORITY) {
     try {
       const testModel = google(modelId);
-      await generateText({ model: testModel, prompt: 'ping', temperature: 0 });
+      await testModel.doGenerate?.({ prompt: 'ping' });
       cachedGeminiModelId = modelId;
       console.log(`✅ Gemini 선택: ${modelId}`);
       return modelId;
     } catch {}
   }
+
   throw new Error('사용 가능한 Gemini 모델 없음');
 }
 
-function cleanJson(text: string): string {
-  return text
-    .trim()
-    .replace(/^```json\s*/i, '')
-    .replace(/^```\s*/i, '')
-    .replace(/```\s*$/i, '')
-    .trim();
-}
+// ==================== JSON Schema (핵심) ====================
+const ReportSchema = z.object({
+  company: z.string().optional(),
+  ticker: z.string().optional(),
 
+  overview: z.any(),
+  financial_summary: z.any().optional(),
+  valuation: z.any().optional(),
+  scenario_analysis: z.any().optional(),
+
+  key_insights: z.any(),
+  risks: z.any(),
+
+  decision: z.any().optional(),
+});
+
+// ==================== API ====================
 export async function POST(req: NextRequest) {
   const { supabase, headers } = createSupabaseServerClient(req);
 
@@ -55,102 +61,96 @@ export async function POST(req: NextRequest) {
     const { ticker, companyName } = body;
 
     if (!ticker && !companyName) {
-      return NextResponse.json({ error: '티커 또는 회사명 필요' }, { status: 400, headers });
+      return NextResponse.json(
+        { error: '티커 또는 회사명 필요' },
+        { status: 400, headers }
+      );
     }
 
-    // 로그인 체크
+    // 로그인 확인
     const { data } = await supabase.auth.getUser();
     const user = data?.user;
 
     if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401, headers });
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401, headers }
+      );
     }
 
     const market =
-      ticker?.includes('.KS') || ticker?.includes('.KQ') ? 'KR' : 'US';
+      ticker?.includes('.KS') || ticker?.includes('.KQ')
+        ? 'KR'
+        : 'US';
 
     const systemPrompt = market === 'US' ? US_PROMPT : KR_PROMPT;
 
     const modelId = await pickGeminiModelIdOnce();
     const model = google(modelId);
 
-    // ==================== 🔥 핵심: 재시도 포함 생성 ====================
-    let textResult = '';
-
-    const first = await generateText({
+    // ==================== 🔥 핵심: generateObject ====================
+    const { object: reportJson } = await generateObject({
       model,
+      schema: ReportSchema,
       system: systemPrompt,
       prompt: `Reference Date: ${new Date().toISOString().split('T')[0]}
 Company: ${ticker || companyName}
 
-IMPORTANT:
-Return ONLY valid JSON.
-No explanation.
-Ensure JSON is complete and closed.`,
+Return structured investment report as JSON.`,
       temperature: 0,
-      maxOutputTokens: 6000,
     });
 
-    textResult = first.text;
-
-    // 🔁 재시도
-    for (let i = 0; i < 2; i++) {
-      const cleaned = cleanJson(textResult);
-
-      if (cleaned.trim().endsWith('}')) break;
-
-      console.log('🔁 JSON 잘림 → 재시도', i + 1);
-
-      const retry = await generateText({
-        model,
-        system: systemPrompt,
-        prompt: `Return ONLY valid complete JSON for ${ticker || companyName}`,
-        temperature: 0,
-        maxOutputTokens: 6000,
-      });
-
-      textResult = retry.text;
-    }
-
-    const cleaned = cleanJson(textResult);
-
-    if (!cleaned.trim().endsWith('}')) {
-      throw new Error('JSON truncated');
-    }
-
-    let reportJson = JSON.parse(cleaned);
-
     // 이미지 삽입
-    reportJson = await insertImagesIntoReport(reportJson);
+    const finalReport = await insertImagesIntoReport(reportJson);
 
     // ZIP 생성
     const zip = new JSZip();
-    zip.file('report.json', JSON.stringify(reportJson, null, 2));
+    zip.file('report.json', JSON.stringify(finalReport, null, 2));
     const zipBytes = await zip.generateAsync({ type: 'uint8array' });
 
     // 업로드
     const filePath = `${user.id}/${Date.now()}.zip`;
 
-    await supabase.storage
+    const { error: uploadErr } = await supabase.storage
       .from('reports')
-      .upload(filePath, zipBytes, { upsert: true });
+      .upload(filePath, zipBytes, {
+        contentType: 'application/zip',
+        upsert: true,
+      });
 
-    const { data: dbData } = await supabase
+    if (uploadErr) throw uploadErr;
+
+    // DB 저장
+    const { data: dbData, error: dbErr } = await supabase
       .from('reports')
       .insert({
         user_id: user.id,
-        ticker,
+        ticker: ticker || null,
         market,
-        report_json: reportJson,
+        report_json: finalReport,
         notebook_zip_path: filePath,
       })
       .select()
       .single();
 
-    return NextResponse.json({ reportId: dbData.id, report: reportJson }, { headers });
+    if (dbErr) throw dbErr;
 
+    return NextResponse.json(
+      {
+        reportId: dbData.id,
+        report: finalReport,
+      },
+      { headers }
+    );
   } catch (err: any) {
-    console.error(err);
-    return NextResponse.json({ error: err.message }, { status: 500, headers });
+    console.error('🚨 generate-report failed:', err);
+
+    return NextResponse.json(
+      {
+        ok: false,
+        error: err?.message ?? String(err),
+      },
+      { status: 500 }
+    );
   }
 }
