@@ -20,7 +20,7 @@
     "@radix-ui/react-tabs": "^1.1.13",
     "@supabase/ssr": "^0.9.0",
     "@supabase/supabase-js": "^2.98.0",
-    "ai": "^6.0.108",
+    "ai": "^6.0.146",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "jszip": "^3.10.1",
@@ -37,7 +37,7 @@
     "tailwind-merge": "^3.5.0",
     "tailwindcss": "^4.2.1",
     "tailwindcss-animate": "^1.0.7",
-    "zod": "^3.24.0"
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.2.1",
