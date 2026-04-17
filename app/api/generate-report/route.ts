@@ -29,38 +29,46 @@ function cleanJson(text: string): string {
     .trim();
 }
 
-// ==================== PDF 생성 ====================
+// ==================== PDF 생성 (디자인 업그레이드) ====================
 async function generatePdf(report: any, req: NextRequest) {
   const pdfDoc = await PDFDocument.create();
   pdfDoc.registerFontkit(fontkit);
 
-  // 🔥 Vercel 대응 폰트 로드
   const fontBytes = await fetch(
     new URL('/fonts/NotoSansKR-Regular.ttf', req.url)
   ).then(res => res.arrayBuffer());
 
   const font = await pdfDoc.embedFont(fontBytes);
 
-  let page = pdfDoc.addPage([595, 842]); // A4
+  let page = pdfDoc.addPage([595, 842]);
   const { width, height } = page.getSize();
 
-  const fontSize = 11;
-  const lineHeight = 16;
   const margin = 50;
-  const maxWidth = width - margin * 2;
-
+  const contentWidth = width - margin * 2;
   let y = height - margin;
 
-  function wrapText(text: string) {
+  const styles = {
+    title: 22,
+    subtitle: 14,
+    header: 13,
+    body: 11,
+  };
+
+  function newPage() {
+    page = pdfDoc.addPage([595, 842]);
+    y = height - margin;
+  }
+
+  function wrapText(text: string, size: number) {
     const chars = text.split('');
     const lines: string[] = [];
     let current = '';
 
     for (const ch of chars) {
       const test = current + ch;
-      const w = font.widthOfTextAtSize(test, fontSize);
+      const w = font.widthOfTextAtSize(test, size);
 
-      if (w > maxWidth && current !== '') {
+      if (w > contentWidth && current !== '') {
         lines.push(current);
         current = ch;
       } else {
@@ -72,60 +80,83 @@ async function generatePdf(report: any, req: NextRequest) {
     return lines;
   }
 
-  function drawBlock(text: string) {
-    const lines = wrapText(text);
+  function drawText(text: string, size: number, gap = 6) {
+    const lines = wrapText(text, size);
 
     for (const line of lines) {
-      if (y < margin) {
-        page = pdfDoc.addPage([595, 842]);
-        y = height - margin;
-      }
+      if (y < margin) newPage();
 
       page.drawText(line, {
         x: margin,
         y,
-        size: fontSize,
+        size,
         font,
       });
 
-      y -= lineHeight;
+      y -= size + 4;
     }
 
-    y -= lineHeight / 2;
+    y -= gap;
   }
 
-  const content = `
-회사명: ${report.company || ''}
-티커: ${report.ticker || ''}
+  function drawDivider() {
+    if (y < margin) newPage();
 
-[개요]
-${formatSection(report.overview)}
+    page.drawLine({
+      start: { x: margin, y },
+      end: { x: width - margin, y },
+      thickness: 1,
+    });
 
-[핵심 인사이트]
-${formatArray(report.key_insights)}
+    y -= 10;
+  }
 
-[리스크]
-${formatArray(report.risks)}
-`;
+  function drawSection(title: string) {
+    drawText(title, styles.header);
+    drawDivider();
+  }
 
-  drawBlock(content);
+  function drawList(arr: any[]) {
+    if (!arr || !Array.isArray(arr)) return;
+
+    arr.forEach((item) => {
+      drawText(`• ${item}`, styles.body);
+    });
+
+    y -= 4;
+  }
+
+  function formatSection(v: any) {
+    if (!v) return '';
+    if (typeof v === 'string') return v;
+    return JSON.stringify(v, null, 2);
+  }
+
+  // ==================== COVER ====================
+  drawText('Investment Report', styles.title, 12);
+  drawText(`${report.company || ''}`, styles.subtitle);
+  drawText(`Ticker: ${report.ticker || ''}`, styles.body);
+  drawText(`Date: ${new Date().toISOString().split('T')[0]}`, styles.body);
+
+  newPage();
+
+  // ==================== SUMMARY ====================
+  drawSection('Executive Summary');
+  drawText(formatSection(report.overview), styles.body);
+
+  // ==================== OVERVIEW ====================
+  drawSection('Company Overview');
+  drawText(formatSection(report.overview), styles.body);
+
+  // ==================== INSIGHTS ====================
+  drawSection('Key Insights');
+  drawList(report.key_insights);
+
+  // ==================== RISKS ====================
+  drawSection('Risks');
+  drawList(report.risks);
 
   return await pdfDoc.save();
-}
-
-// ==================== 헬퍼 ====================
-function formatSection(v: any) {
-  if (!v) return '';
-  if (typeof v === 'string') return v;
-  return JSON.stringify(v, null, 2);
-}
-
-function formatArray(arr: any) {
-  if (!arr) return '';
-  if (Array.isArray(arr)) {
-    return arr.map((x, i) => `${i + 1}. ${x}`).join('\n');
-  }
-  return JSON.stringify(arr, null, 2);
 }
 
 // ==================== API ====================
