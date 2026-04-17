@@ -12,7 +12,7 @@ import { insertImagesIntoReport } from '@/lib/imageUtils';
 
 export const runtime = 'nodejs';
 
-const GEMINI_MODEL = 'gemini-1.5-flash';
+const GEMINI_MODEL = 'gemini-2.5-flash';
 
 // ==================== JSON 정리 ====================
 function cleanJson(text: string): string {
