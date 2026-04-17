@@ -12,7 +12,6 @@ import { insertImagesIntoReport } from '@/lib/imageUtils';
 
 export const runtime = 'nodejs';
 
-// ==================== Gemini 모델 ====================
 const GEMINI_MODEL = 'gemini-1.5-flash';
 
 // ==================== JSON 정리 ====================
@@ -23,6 +22,33 @@ function cleanJson(text: string): string {
     .replace(/^```\s*/i, '')
     .replace(/```\s*$/i, '')
     .trim();
+}
+
+// ==================== 최신성 검증 ====================
+function validateFreshness(report: any) {
+  try {
+    const now = new Date();
+    const refDateStr =
+      report.analysis_date ||
+      report.latest_source_date ||
+      report.latest_primary_source_date;
+
+    if (!refDateStr) {
+      throw new Error('최신 데이터 없음');
+    }
+
+    const refDate = new Date(refDateStr);
+
+    const diffMonths =
+      (now.getFullYear() - refDate.getFullYear()) * 12 +
+      (now.getMonth() - refDate.getMonth());
+
+    if (diffMonths > 6) {
+      throw new Error('데이터가 6개월 이상 오래됨');
+    }
+  } catch (e) {
+    throw new Error('최신 데이터 검증 실패');
+  }
 }
 
 // ==================== PDF 생성 ====================
@@ -88,14 +114,25 @@ export async function POST(req: NextRequest) {
 
     const systemPrompt = market === 'US' ? US_PROMPT : KR_PROMPT;
 
-    // ==================== AI 생성 ====================
     const model = google(GEMINI_MODEL);
 
+    // ==================== 최신 데이터 강제 프롬프트 ====================
     const { text } = await generateText({
       model,
       system: systemPrompt,
-      prompt: `Company: ${ticker || companyName}
-Return ONLY valid JSON.`,
+      prompt: `
+Reference Date: ${new Date().toISOString().split('T')[0]}
+
+Company: ${ticker || companyName}
+
+IMPORTANT RULES:
+- Use ONLY data from the last 6 months
+- If recent data is unavailable, respond with "insufficient recent data"
+- Do NOT use outdated information
+- Include "analysis_date" field in YYYY-MM-DD format
+
+Return ONLY valid JSON.
+`,
     });
 
     const cleaned = cleanJson(text);
@@ -107,6 +144,9 @@ Return ONLY valid JSON.`,
       console.error('JSON 파싱 실패:', cleaned.slice(0, 500));
       throw new Error('모델이 올바른 json을 반환하지 않았습니다');
     }
+
+    // ==================== 최신성 검증 ====================
+    validateFreshness(reportJson);
 
     // 이미지 삽입
     reportJson = await insertImagesIntoReport(reportJson);
