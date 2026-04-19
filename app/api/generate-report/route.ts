@@ -1,9 +1,15 @@
-import { NextRequest, NextResponse } from 'next/server';
+import type { NextRequest } from 'next/server';
+import { NextResponse } from 'next/server';
+import { generateText } from 'ai';
+import { google } from '@ai-sdk/google';
 import JSZip from 'jszip';
+
+import { createSupabaseServerClient } from '@/lib/supabase/server';
+import { US_PROMPT, KR_PROMPT } from '@/lib/prompts';
 
 export const runtime = 'nodejs';
 
-// ================= JSON 안전 처리 =================
+// ================= JSON 안정화 =================
 function extractJson(text: string) {
   const start = text.indexOf('{');
   const end = text.lastIndexOf('}');
@@ -32,11 +38,15 @@ function repairJson(text: string) {
 function safeJsonParse(text: string) {
   try {
     return JSON.parse(text);
-  } catch {
+  } catch (e) {
+    console.log('❌ JSON 깨짐 → 복구 시도');
+
     try {
       const repaired = repairJson(text);
       return JSON.parse(repaired);
-    } catch {
+    } catch (e2) {
+      console.log('❌ JSON 복구 실패 → fallback');
+
       return {
         company: 'UNKNOWN',
         ticker: 'UNKNOWN',
@@ -54,48 +64,127 @@ function safeJsonParse(text: string) {
   }
 }
 
+// ================= 시장 판단 =================
+function detectMarket(ticker?: string, companyName?: string) {
+  if (ticker && /^\d{6}$/.test(ticker)) return 'KR';
+  if (ticker?.endsWith('.KS') || ticker?.endsWith('.KQ')) return 'KR';
+  if (companyName?.includes('전자')) return 'KR';
+  return 'US';
+}
+
 // ================= MAIN =================
 export async function POST(req: NextRequest) {
+  const { supabase, headers } = createSupabaseServerClient(req);
+
   try {
     const body = await req.json();
     const { ticker, companyName } = body;
 
-    // 👉 임시 더미 (빌드 테스트용)
-    const fakeAIResponse = `
-    {
-      "company": "Samsung Electronics",
-      "ticker": "005930",
-      "overview": {
-        "company_profile": "삼성전자 설명",
-        "business_model": "반도체, 모바일",
-        "recent_trends": "AI 반도체 성장"
-      },
-      "key_insights": ["HBM 성장", "AI 수요 증가"],
-      "risks": ["메모리 가격 변동"],
-      "should_i_buy": "긍정적",
-      "investment_score": 85
-    }
-    `;
+    const { data } = await supabase.auth.getUser();
+    const user = data?.user;
 
-    const extracted = extractJson(fakeAIResponse);
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    console.log('USER ID:', user.id);
+
+    const market = detectMarket(ticker, companyName);
+    const systemPrompt = market === 'KR' ? KR_PROMPT : US_PROMPT;
+
+    // ===== Gemini 호출 =====
+    let text = '';
+    let lastError: any;
+
+    const models = ['gemini-2.5-flash', 'gemini-2.0-flash'];
+
+    for (const modelId of models) {
+      try {
+        console.log('🚀 모델 시도:', modelId);
+
+        const result = await generateText({
+          model: google(modelId),
+          system: systemPrompt,
+          prompt: `Company: ${ticker || companyName}\nReturn ONLY JSON`,
+        });
+
+        text = result.text;
+
+        console.log('✅ 성공 모델:', modelId);
+        break;
+
+      } catch (e) {
+        lastError = e;
+        console.log('❌ 실패 모델:', modelId);
+      }
+    }
+
+    if (!text) {
+      throw new Error(`모델 실패: ${lastError?.message}`);
+    }
+
+    console.log('RAW TEXT:', text.slice(0, 500));
+
+    // ===== JSON 처리 =====
+    const extracted = extractJson(text);
     const reportJson = safeJsonParse(extracted);
 
-    // ZIP 생성
+    // ===== ZIP 생성 =====
     const zip = new JSZip();
     zip.file('report.json', JSON.stringify(reportJson, null, 2));
     const zipBytes = await zip.generateAsync({ type: 'uint8array' });
 
-    return NextResponse.json({
-      ok: true,
-      report: reportJson,
-      zipSize: zipBytes.length,
-    });
+    const safeTicker = (ticker || companyName || 'report').replace(/[^a-zA-Z0-9._-]/g, '_');
+
+    const zipPath = `${user.id}/${safeTicker}-${Date.now()}.zip`;
+
+    // ===== Storage 업로드 =====
+    const { error: zipErr } = await supabase.storage
+      .from('reports')
+      .upload(zipPath, zipBytes, {
+        contentType: 'application/zip',
+      });
+
+    if (zipErr) throw zipErr;
+
+    // ===== DB 저장 =====
+    const { data: dbData, error: dbErr } = await supabase
+      .from('reports')
+      .insert([
+        {
+          user_id: user.id,
+          ticker,
+          region: market,
+          report_json: reportJson,
+          json_path: zipPath,
+          status: 'completed',
+        },
+      ])
+      .select()
+      .single();
+
+    if (dbErr) throw dbErr;
+
+    const zipUrl = supabase.storage
+      .from('reports')
+      .getPublicUrl(zipPath).data.publicUrl;
+
+    return NextResponse.json(
+      {
+        reportId: dbData.id,
+        zipUrl,
+      },
+      { headers }
+    );
 
   } catch (err: any) {
     console.error('🚨 ERROR:', err);
 
     return NextResponse.json(
-      { ok: false, error: err?.message || String(err) },
+      {
+        ok: false,
+        error: err?.message || String(err),
+      },
       { status: 500 }
     );
   }
