@@ -115,6 +115,9 @@ export async function POST(req: NextRequest) {
 
     const { data } = await supabase.auth.getUser();
     const user = data?.user;
+   // 👇 여기 추가
+    console.log('USER:', user);
+    console.log('USER ID:', user?.id);
 
     if (!user) {
       return NextResponse.json(
