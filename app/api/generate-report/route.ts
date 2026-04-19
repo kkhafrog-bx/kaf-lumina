@@ -3,7 +3,8 @@ import { NextResponse } from 'next/server';
 import { generateText } from 'ai';
 import { google } from '@ai-sdk/google';
 import JSZip from 'jszip';
-import { PDFDocument, StandardFonts } from 'pdf-lib';
+import { PDFDocument } from 'pdf-lib';
+import fontkit from '@pdf-lib/fontkit';
 
 import { createSupabaseServerClient } from '@/lib/supabase/server';
 import { US_PROMPT, KR_PROMPT } from '@/lib/prompts';
@@ -51,10 +52,16 @@ function validateFreshness(report: any) {
   return refDateStr;
 }
 
-// ================= PDF 생성 =================
+// ================= PDF 생성 (한글 완전 지원) =================
 async function generatePdf(report: any) {
   const pdfDoc = await PDFDocument.create();
-  const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  pdfDoc.registerFontkit(fontkit);
+
+  // 👉 public/fonts/NotoSansKR-Regular.ttf 위치 필요
+  const fontUrl = `${process.env.NEXT_PUBLIC_BASE_URL}/fonts/NotoSansKR-Regular.ttf`;
+
+  const fontBytes = await fetch(fontUrl).then((res) => res.arrayBuffer());
+  const customFont = await pdfDoc.embedFont(fontBytes);
 
   const page = pdfDoc.addPage([595, 842]);
   const { height } = page.getSize();
@@ -83,9 +90,9 @@ ${typeof report.overview === 'string'
     x: 50,
     y: height - 50,
     size: 10,
-    font,
+    font: customFont,
     maxWidth: 500,
-    lineHeight: 14,
+    lineHeight: 16,
   });
 
   return await pdfDoc.save();
@@ -136,7 +143,6 @@ Company: ${ticker || companyName}
 
 IMPORTANT RULES:
 - Use ONLY data from the last 6 months
-- If recent data is unavailable, respond with "insufficient recent data"
 - Include "analysis_date" field (YYYY-MM-DD)
 
 Return ONLY valid JSON.
