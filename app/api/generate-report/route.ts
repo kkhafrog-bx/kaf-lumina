@@ -3,76 +3,95 @@ import { NextResponse } from 'next/server';
 import { generateText } from 'ai';
 import { google } from '@ai-sdk/google';
 import JSZip from 'jszip';
+import { PDFDocument, StandardFonts } from 'pdf-lib';
 
 import { createSupabaseServerClient } from '@/lib/supabase/server';
 import { US_PROMPT, KR_PROMPT } from '@/lib/prompts';
+import { insertImagesIntoReport } from '@/lib/imageUtils';
 
 export const runtime = 'nodejs';
 
-// ================= JSON 안정화 =================
-function extractJson(text: string) {
-  const start = text.indexOf('{');
-  const end = text.lastIndexOf('}');
-  if (start === -1 || end === -1) {
-    throw new Error('JSON 구조 없음');
+const GEMINI_MODEL = 'gemini-2.5-flash';
+
+// ================= JSON 정리 =================
+function cleanJson(text: string): string {
+  return text
+    .trim()
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/```\s*$/i, '')
+    .trim();
+}
+
+// ================= 투자기간 분류 =================
+function classifyInvestmentHorizon(dateStr: string) {
+  const now = new Date();
+  const d = new Date(dateStr);
+
+  const diffDays =
+    (now.getTime() - d.getTime()) / (1000 * 60 * 60 * 24);
+
+  if (diffDays <= 7) return '단기 투자';
+  if (diffDays <= 90) return '중기 투자';
+  if (diffDays <= 365) return '장기 투자';
+  return '사용 불가';
+}
+
+// ================= 최신성 검증 =================
+function validateFreshness(report: any) {
+  const refDateStr =
+    report.analysis_date ||
+    report.latest_source_date ||
+    report.latest_primary_source_date;
+
+  if (!refDateStr) {
+    throw new Error('최신 데이터 없음');
   }
-  return text.slice(start, end + 1);
+
+  return refDateStr;
 }
 
-function repairJson(text: string) {
-  let fixed = text;
+// ================= PDF 생성 =================
+async function generatePdf(report: any) {
+  const pdfDoc = await PDFDocument.create();
+  const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
 
-  fixed = fixed.replace(/```json/g, '');
-  fixed = fixed.replace(/```/g, '');
+  const page = pdfDoc.addPage([595, 842]);
+  const { height } = page.getSize();
 
-  fixed = fixed.replace(/,\s*}/g, '}');
-  fixed = fixed.replace(/,\s*]/g, ']');
+  const text = `
+[투자 리포트]
 
-  fixed = fixed.replace(/([{,]\s*)([a-zA-Z0-9_]+)\s*:/g, '$1"$2":');
+기업: ${report.company || ''}
+티커: ${report.ticker || ''}
 
-  fixed = fixed.replace(/\n/g, ' ');
+[투자 기준]
+생성일: ${report.meta?.generated_at || ''}
+기준 데이터 날짜: ${report.meta?.reference_date || ''}
+투자 관점: ${report.meta?.investment_horizon || ''}
 
-  return fixed;
-}
+${report.warning ? `⚠️ ${report.warning}` : ''}
 
-function safeJsonParse(text: string) {
-  try {
-    return JSON.parse(text);
-  } catch (e) {
-    console.log('❌ JSON 깨짐 → 복구 시도');
-
-    try {
-      const repaired = repairJson(text);
-      return JSON.parse(repaired);
-    } catch (e2) {
-      console.log('❌ JSON 복구 실패 → fallback');
-
-      return {
-        company: 'UNKNOWN',
-        ticker: 'UNKNOWN',
-        overview: {
-          company_profile: '데이터 파싱 실패',
-          business_model: '',
-          recent_trends: '',
-        },
-        key_insights: [],
-        risks: [],
-        should_i_buy: '데이터 오류',
-        investment_score: 0,
-      };
+[개요]
+${typeof report.overview === 'string'
+      ? report.overview
+      : JSON.stringify(report.overview, null, 2)
     }
-  }
+`;
+
+  page.drawText(text, {
+    x: 50,
+    y: height - 50,
+    size: 10,
+    font,
+    maxWidth: 500,
+    lineHeight: 14,
+  });
+
+  return await pdfDoc.save();
 }
 
-// ================= 시장 판단 =================
-function detectMarket(ticker?: string, companyName?: string) {
-  if (ticker && /^\d{6}$/.test(ticker)) return 'KR';
-  if (ticker?.endsWith('.KS') || ticker?.endsWith('.KQ')) return 'KR';
-  if (companyName?.includes('전자')) return 'KR';
-  return 'US';
-}
-
-// ================= MAIN =================
+// ================= API =================
 export async function POST(req: NextRequest) {
   const { supabase, headers } = createSupabaseServerClient(req);
 
@@ -80,111 +99,136 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const { ticker, companyName } = body;
 
+    if (!ticker && !companyName) {
+      return NextResponse.json(
+        { error: '티커 또는 회사명이 필요합니다.' },
+        { status: 400, headers }
+      );
+    }
+
     const { data } = await supabase.auth.getUser();
     const user = data?.user;
 
     if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401, headers }
+      );
     }
 
-    console.log('USER ID:', user.id);
+    const market =
+      ticker?.includes('.KS') || ticker?.includes('.KQ') || /^\d{6}$/.test(ticker || '')
+        ? 'KR'
+        : 'US';
 
-    const market = detectMarket(ticker, companyName);
-    const systemPrompt = market === 'KR' ? KR_PROMPT : US_PROMPT;
+    const systemPrompt = market === 'US' ? US_PROMPT : KR_PROMPT;
 
-    // ===== Gemini 호출 =====
-    let text = '';
-    let lastError: any;
+    const model = google(GEMINI_MODEL);
 
-    const models = ['gemini-2.5-flash', 'gemini-2.0-flash'];
+    // ================= Gemini =================
+    const { text } = await generateText({
+      model,
+      system: systemPrompt,
+      prompt: `
+Reference Date: ${new Date().toISOString().split('T')[0]}
 
-    for (const modelId of models) {
-      try {
-        console.log('🚀 모델 시도:', modelId);
+Company: ${ticker || companyName}
 
-        const result = await generateText({
-          model: google(modelId),
-          system: systemPrompt,
-          prompt: `Company: ${ticker || companyName}\nReturn ONLY JSON`,
-        });
+IMPORTANT RULES:
+- Use ONLY data from the last 6 months
+- If recent data is unavailable, respond with "insufficient recent data"
+- Include "analysis_date" field (YYYY-MM-DD)
 
-        text = result.text;
+Return ONLY valid JSON.
+`,
+    });
 
-        console.log('✅ 성공 모델:', modelId);
-        break;
+    const cleaned = cleanJson(text);
 
-      } catch (e) {
-        lastError = e;
-        console.log('❌ 실패 모델:', modelId);
-      }
+    let reportJson: any;
+    try {
+      reportJson = JSON.parse(cleaned);
+    } catch {
+      console.error('JSON 파싱 실패:', cleaned.slice(0, 500));
+      throw new Error('모델 JSON 오류');
     }
 
-    if (!text) {
-      throw new Error(`모델 실패: ${lastError?.message}`);
+    // ================= 최신성 + 투자기간 =================
+    const refDate = validateFreshness(reportJson);
+    const horizon = classifyInvestmentHorizon(refDate);
+
+    reportJson.meta = {
+      generated_at: new Date().toISOString(),
+      reference_date: refDate,
+      investment_horizon: horizon,
+    };
+
+    if (horizon === '사용 불가') {
+      reportJson.warning =
+        '⚠️ 최신 데이터 기준 미달. 투자 판단용으로 부적합';
     }
 
-    console.log('RAW TEXT:', text.slice(0, 500));
+    // 이미지 삽입
+    reportJson = await insertImagesIntoReport(reportJson);
 
-    // ===== JSON 처리 =====
-    const extracted = extractJson(text);
-    const reportJson = safeJsonParse(extracted);
+    // ================= PDF =================
+    const pdfBytes = await generatePdf(reportJson);
 
-    // ===== ZIP 생성 =====
+    // ================= ZIP =================
     const zip = new JSZip();
     zip.file('report.json', JSON.stringify(reportJson, null, 2));
+    zip.file('report.pdf', pdfBytes);
+
     const zipBytes = await zip.generateAsync({ type: 'uint8array' });
 
+    // ================= Storage =================
     const safeTicker = (ticker || companyName || 'report').replace(/[^a-zA-Z0-9._-]/g, '_');
+    const filePath = `${user.id}/${safeTicker}-${Date.now()}.zip`;
 
-    const zipPath = `${user.id}/${safeTicker}-${Date.now()}.zip`;
-
-    // ===== Storage 업로드 =====
-    const { error: zipErr } = await supabase.storage
+    const { error: uploadErr } = await supabase.storage
       .from('reports')
-      .upload(zipPath, zipBytes, {
+      .upload(filePath, zipBytes, {
         contentType: 'application/zip',
+        upsert: true,
       });
 
-    if (zipErr) throw zipErr;
+    if (uploadErr) throw uploadErr;
 
-    // ===== DB 저장 =====
+    // ================= DB =================
     const { data: dbData, error: dbErr } = await supabase
       .from('reports')
-      .insert([
-        {
-          user_id: user.id,
-          ticker,
-          region: market,
-          report_json: reportJson,
-          json_path: zipPath,
-          status: 'completed',
-        },
-      ])
+      .insert({
+        user_id: user.id,
+        ticker: ticker || null,
+        region: market,
+        report_json: reportJson,
+        json_path: filePath,
+        status: 'completed',
+      })
       .select()
       .single();
 
     if (dbErr) throw dbErr;
 
-    const zipUrl = supabase.storage
+    // ================= 다운로드 URL =================
+    const { data: publicUrlData } = supabase
+      .storage
       .from('reports')
-      .getPublicUrl(zipPath).data.publicUrl;
+      .getPublicUrl(filePath);
 
     return NextResponse.json(
       {
         reportId: dbData.id,
-        zipUrl,
+        report: reportJson,
+        downloadUrl: publicUrlData.publicUrl,
       },
       { headers }
     );
-
   } catch (err: any) {
-    console.error('🚨 ERROR:', err);
+    console.error('🚨 generate-report failed:', err);
 
     return NextResponse.json(
-      {
-        ok: false,
-        error: err?.message || String(err),
-      },
+      { error: err.message },
       { status: 500 }
     );
   }
