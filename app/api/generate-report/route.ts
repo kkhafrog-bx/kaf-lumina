@@ -118,7 +118,7 @@ export async function POST(req: NextRequest) {
    // 👇 여기 추가
     console.log('USER:', user);
     console.log('USER ID:', user?.id);
-
+    console.log('RAW TEXT:', text.slice(0, 1000));
     if (!user) {
       return NextResponse.json(
         { error: 'Unauthorized' },
@@ -163,10 +163,11 @@ Return ONLY valid JSON.`,
 
     let reportJson: any;
     try {
-      reportJson = JSON.parse(cleaned);
-    } catch {
-      throw new Error('JSON 파싱 실패');
-    }
+  reportJson = JSON.parse(cleaned);
+} catch (e) {
+  console.error('❌ JSON PARSE FAIL:', cleaned);
+  throw e;
+}
 
     reportJson = await insertImagesIntoReport(reportJson);
 
