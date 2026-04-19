@@ -17,17 +17,12 @@ const GEMINI_PRIORITY = [
   'gemini-1.5-flash',
 ] as const;
 
-// ==================== 시장 판별 (수정 완료) ====================
+// ==================== 시장 판별 ====================
 function detectMarket(ticker?: string, companyName?: string) {
   if (!ticker && !companyName) return 'US';
 
-  // 한국 주식: 6자리 숫자
   if (ticker && /^\d{6}$/.test(ticker)) return 'KR';
-
-  // suffix
   if (ticker?.endsWith('.KS') || ticker?.endsWith('.KQ')) return 'KR';
-
-  // 회사명 기반
   if (companyName?.includes('전자') || companyName?.includes('주식회사')) return 'KR';
 
   return 'US';
@@ -51,23 +46,6 @@ function extractJson(text: string): string {
     throw new Error('JSON 형태를 찾을 수 없음');
   }
   return text.slice(first, last + 1);
-}
-
-// ==================== 최신 데이터 판정 ====================
-function classifyInvestment(latestDateStr: string | null) {
-  if (!latestDateStr) return 'DATA_INSUFFICIENT';
-
-  const today = new Date();
-  const latest = new Date(latestDateStr);
-
-  const diffDays = Math.floor(
-    (today.getTime() - latest.getTime()) / (1000 * 60 * 60 * 24)
-  );
-
-  if (diffDays <= 7) return 'SHORT_TERM';
-  if (diffDays <= 30) return 'MID_TERM';
-  if (diffDays <= 90) return 'LONG_TERM';
-  return 'INVALID';
 }
 
 // ==================== JSON 정규화 ====================
@@ -108,7 +86,7 @@ export async function POST(req: NextRequest) {
     console.log('USER:', user);
     console.log('USER ID:', user?.id);
 
-    if (!user) {
+    if (!user || !user.id) {
       return NextResponse.json(
         { error: 'Unauthorized' },
         { status: 401, headers }
@@ -117,10 +95,9 @@ export async function POST(req: NextRequest) {
 
     // ==================== MARKET ====================
     const market = detectMarket(ticker, companyName);
-
     const systemPrompt = market === 'US' ? US_PROMPT : KR_PROMPT;
 
-    // ==================== MODEL 실행 ====================
+    // ==================== 모델 실행 ====================
     let text = '';
     let lastError: any;
 
@@ -136,16 +113,14 @@ Reference Date: ${new Date().toISOString().split('T')[0]}
 Company: ${ticker || companyName}
 
 IMPORTANT:
-- 반드시 "latest_source_date" 포함 (YYYY-MM-DD)
-- 최신 데이터만 사용
-- JSON만 반환
+- 반드시 JSON만 반환
 `,
         });
 
         text = result.text;
 
         console.log(`✅ 성공 모델: ${modelId}`);
-        console.log('RAW TEXT:', text.slice(0, 1000));
+        console.log('RAW TEXT:', text.slice(0, 500));
 
         break;
       } catch (err: any) {
@@ -158,36 +133,17 @@ IMPORTANT:
       throw new Error(`모든 Gemini 모델 실패: ${lastError?.message}`);
     }
 
-    // ==================== JSON 처리 ====================
+    // ==================== JSON 파싱 ====================
     const cleaned = cleanJson(text);
-    console.log('CLEANED TEXT:', cleaned.slice(0, 1000));
-
-    let reportJson: any;
-
-    try {
-      const extracted = extractJson(cleaned);
-      reportJson = JSON.parse(extracted);
-    } catch (e) {
-      console.error('❌ JSON PARSE FAIL:', cleaned);
-      throw new Error('모델이 올바른 JSON을 반환하지 않았습니다');
-    }
+    const extracted = extractJson(cleaned);
+    let reportJson = JSON.parse(extracted);
 
     reportJson = normalizeReportJson(reportJson);
 
-    // ==================== 최신 데이터 판정 ====================
-    const latestDate = reportJson.latest_source_date ?? null;
-    const classification = classifyInvestment(latestDate);
-
-    reportJson.report_meta = {
-      generated_at: new Date().toISOString(),
-      latest_source_date: latestDate,
-      investment_horizon: classification,
-    };
-
-    // ==================== 이미지 ====================
+    // ==================== 이미지 삽입 ====================
     reportJson = await insertImagesIntoReport(reportJson);
 
-    // ==================== ZIP ====================
+    // ==================== ZIP 생성 ====================
     const zip = new JSZip();
     zip.file('report.json', JSON.stringify(reportJson, null, 2));
     const zipBytes = await zip.generateAsync({ type: 'uint8array' });
@@ -212,16 +168,18 @@ IMPORTANT:
       throw uploadErr;
     }
 
-    // ==================== DB ====================
+    // ==================== DB INSERT (RLS 핵심 FIX) ====================
     const { data: dbData, error: dbErr } = await supabase
       .from('reports')
-      .insert({
-        user_id: user.id,
-        ticker: ticker || null,
-        region: market,
-        json_path: filePath,
-        status: 'completed',
-      })
+      .insert([
+        {
+          user_id: user.id, // 🔥 반드시 이 값
+          ticker: ticker || null,
+          region: market,
+          json_path: filePath,
+          status: 'completed',
+        },
+      ])
       .select()
       .single();
 
@@ -231,7 +189,10 @@ IMPORTANT:
     }
 
     return NextResponse.json(
-      { reportId: dbData.id, report: reportJson },
+      {
+        reportId: dbData.id,
+        report: reportJson,
+      },
       { headers }
     );
 
