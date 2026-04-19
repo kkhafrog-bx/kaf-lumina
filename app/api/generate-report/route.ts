@@ -1,241 +1,33 @@
-import type { NextRequest } from 'next/server';
-import { NextResponse } from 'next/server';
-import { generateText } from 'ai';
-import { google } from '@ai-sdk/google';
-import JSZip from 'jszip';
+'use client';
 
-import { createSupabaseServerClient } from '@/lib/supabase/server';
-import { US_PROMPT, KR_PROMPT } from '@/lib/prompts';
-import { insertImagesIntoReport } from '@/lib/imageUtils';
+import { createBrowserClient } from '@supabase/ssr';
 
-import { PDFDocument, rgb } from 'pdf-lib';
-import fs from 'fs';
-import path from 'path';
+export default function Header() {
+  const supabase = createBrowserClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+  );
 
-export const runtime = 'nodejs';
-
-// ================= 모델 =================
-const GEMINI_PRIORITY = [
-  'gemini-2.5-flash',
-  'gemini-2.0-flash',
-] as const;
-
-// ================= 유틸 =================
-function cleanJson(text: string) {
-  return text.replace(/```json|```/g, '').trim();
-}
-
-function extractJson(text: string) {
-  const s = text.indexOf('{');
-  const e = text.lastIndexOf('}');
-  if (s === -1 || e === -1) throw new Error('JSON 구조 없음');
-  return text.slice(s, e + 1);
-}
-
-function detectMarket(ticker?: string, companyName?: string) {
-  if (ticker && /^\d{6}$/.test(ticker)) return 'KR';
-  if (ticker?.endsWith('.KS') || ticker?.endsWith('.KQ')) return 'KR';
-  if (companyName?.includes('전자') || companyName?.includes('주식회사')) return 'KR';
-  return 'US';
-}
-
-function wrapText(text: string, maxLen = 45) {
-  const words = text.split(' ');
-  const lines: string[] = [];
-  let line = '';
-
-  for (const word of words) {
-    if ((line + word).length > maxLen) {
-      lines.push(line);
-      line = word + ' ';
-    } else {
-      line += word + ' ';
-    }
-  }
-
-  if (line) lines.push(line);
-  return lines;
-}
-
-// ================= PDF =================
-async function createPdf(report: any) {
-  const pdfDoc = await PDFDocument.create();
-  let page = pdfDoc.addPage([595, 842]);
-
-  const fontPath = path.join(process.cwd(), 'public/fonts/NotoSansKR-Regular.ttf');
-  const fontBytes = fs.readFileSync(fontPath);
-  const font = await pdfDoc.embedFont(fontBytes);
-
-  let y = 780;
-
-  const draw = (text: string, size = 12, bold = false) => {
-    if (y < 80) {
-      page = pdfDoc.addPage([595, 842]);
-      y = 780;
-    }
-
-    page.drawText(text, {
-      x: 50,
-      y,
-      size,
-      font,
-      color: bold ? rgb(0, 0.4, 0.7) : rgb(0, 0, 0),
-    });
-
-    y -= size + 6;
+  const logout = async () => {
+    await supabase.auth.signOut();
+    window.location.href = '/login';
   };
 
-  const divider = () => {
-    page.drawLine({
-      start: { x: 50, y },
-      end: { x: 545, y },
-      thickness: 1,
-      color: rgb(0.8, 0.8, 0.8),
-    });
-    y -= 10;
-  };
+  return (
+    <div className="border-b border-gray-800 bg-black">
+      <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
+        
+        <h1 className="text-xl font-bold text-orange-400">
+          LUMINA INVESTMENT
+        </h1>
 
-  draw('LUMINA INVESTMENT REPORT', 20, true);
-  draw(`Company: ${report.company || ''}`);
-  draw(`Ticker: ${report.ticker || ''}`);
-  draw(`Generated: ${new Date().toISOString().split('T')[0]}`, 10);
-  divider();
-
-  const sections = [
-    ['Overview', report.overview?.company_profile],
-    ['Business Model', report.overview?.business_model],
-    ['Trends', report.overview?.recent_trends],
-  ];
-
-  for (const [title, content] of sections) {
-    if (!content) continue;
-
-    draw(title, 14, true);
-    const lines = wrapText(content, 48);
-    lines.forEach((l) => draw(l, 11));
-    y -= 10;
-  }
-
-  return await pdfDoc.save();
-}
-
-// ================= MAIN =================
-export async function POST(req: NextRequest) {
-  const { supabase, headers } = createSupabaseServerClient(req);
-
-  try {
-    const body = await req.json();
-    const { ticker, companyName } = body;
-
-    const { data } = await supabase.auth.getUser();
-    const user = data?.user;
-
-    console.log('USER:', user?.id);
-
-    if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
-
-    const market = detectMarket(ticker, companyName);
-    const systemPrompt = market === 'KR' ? KR_PROMPT : US_PROMPT;
-
-    // ===== 모델 실행 =====
-    let text = '';
-    let lastError: any;
-
-    for (const modelId of GEMINI_PRIORITY) {
-      try {
-        const result = await generateText({
-          model: google(modelId),
-          system: systemPrompt,
-          prompt: `Company: ${ticker || companyName}\nReturn ONLY JSON`,
-        });
-
-        text = result.text;
-        break;
-      } catch (e) {
-        lastError = e;
-      }
-    }
-
-    if (!text) {
-      throw new Error(`모델 실패: ${lastError?.message}`);
-    }
-
-    // ===== JSON =====
-    const cleaned = cleanJson(text);
-    const extracted = extractJson(cleaned);
-    let reportJson = JSON.parse(extracted);
-
-    reportJson = await insertImagesIntoReport(reportJson);
-
-    // ===== ZIP =====
-    const zip = new JSZip();
-    zip.file('report.json', JSON.stringify(reportJson, null, 2));
-    const zipBytes = await zip.generateAsync({ type: 'uint8array' });
-
-    const safeTicker = (ticker || companyName || 'report').replace(/[^a-zA-Z0-9._-]/g, '_');
-
-    const zipPath = `${user.id}/${safeTicker}-${Date.now()}.zip`;
-    const pdfPath = `${user.id}/${safeTicker}-${Date.now()}.pdf`;
-
-    // ===== Storage 업로드 =====
-    const { error: zipErr } = await supabase.storage
-      .from('reports')
-      .upload(zipPath, zipBytes, { contentType: 'application/zip' });
-
-    if (zipErr) throw zipErr;
-
-    // ===== PDF =====
-    const pdfBytes = await createPdf(reportJson);
-
-    const { error: pdfErr } = await supabase.storage
-      .from('reports')
-      .upload(pdfPath, pdfBytes, { contentType: 'application/pdf' });
-
-    if (pdfErr) throw pdfErr;
-
-    // ===== DB 저장 (핵심) =====
-    const { data: dbData, error: dbErr } = await supabase
-      .from('reports')
-      .insert([
-        {
-          user_id: user.id,
-          ticker: ticker || null,
-          region: market,
-          report_json: reportJson, // 🔥 필수
-          json_path: zipPath,
-          pdf_path: pdfPath,
-          status: 'completed',
-        },
-      ])
-      .select()
-      .single();
-
-    if (dbErr) throw dbErr;
-
-    // ===== 다운로드 URL =====
-    const pdfUrl = supabase.storage.from('reports').getPublicUrl(pdfPath).data.publicUrl;
-    const zipUrl = supabase.storage.from('reports').getPublicUrl(zipPath).data.publicUrl;
-
-    return NextResponse.json(
-      {
-        reportId: dbData.id,
-        pdfUrl,
-        zipUrl,
-      },
-      { headers }
-    );
-
-  } catch (err: any) {
-    console.error('🚨 ERROR:', err);
-
-    return NextResponse.json(
-      {
-        ok: false,
-        error: err?.message || String(err),
-      },
-      { status: 500 }
-    );
-  }
+        <button
+          onClick={logout}
+          className="px-4 py-2 border border-gray-600 rounded hover:bg-gray-800"
+        >
+          로그아웃
+        </button>
+      </div>
+    </div>
+  );
 }
