@@ -10,28 +10,12 @@ import { insertImagesIntoReport } from '@/lib/imageUtils';
 
 export const runtime = 'nodejs';
 
-// ==================== Gemini fallback ====================
+// ==================== Gemini 순차 fallback ====================
 const GEMINI_PRIORITY = [
   'gemini-2.5-flash',
   'gemini-2.0-flash',
   'gemini-1.5-flash',
 ] as const;
-
-// ==================== 시장 판별 (수정 완료) ====================
-function detectMarket(ticker?: string, companyName?: string) {
-  if (!ticker && !companyName) return 'US';
-
-  // 한국 주식: 6자리 숫자
-  if (ticker && /^\d{6}$/.test(ticker)) return 'KR';
-
-  // suffix
-  if (ticker?.endsWith('.KS') || ticker?.endsWith('.KQ')) return 'KR';
-
-  // 회사명 기반
-  if (companyName?.includes('전자') || companyName?.includes('주식회사')) return 'KR';
-
-  return 'US';
-}
 
 // ==================== JSON 클린 ====================
 function cleanJson(text: string): string {
@@ -43,7 +27,7 @@ function cleanJson(text: string): string {
     .trim();
 }
 
-// ==================== JSON 추출 ====================
+// ✅ JSON 추출 (중간 쓰레기 제거)
 function extractJson(text: string): string {
   const first = text.indexOf('{');
   const last = text.lastIndexOf('}');
@@ -53,24 +37,7 @@ function extractJson(text: string): string {
   return text.slice(first, last + 1);
 }
 
-// ==================== 최신 데이터 판정 ====================
-function classifyInvestment(latestDateStr: string | null) {
-  if (!latestDateStr) return 'DATA_INSUFFICIENT';
-
-  const today = new Date();
-  const latest = new Date(latestDateStr);
-
-  const diffDays = Math.floor(
-    (today.getTime() - latest.getTime()) / (1000 * 60 * 60 * 24)
-  );
-
-  if (diffDays <= 7) return 'SHORT_TERM';
-  if (diffDays <= 30) return 'MID_TERM';
-  if (diffDays <= 90) return 'LONG_TERM';
-  return 'INVALID';
-}
-
-// ==================== JSON 정규화 ====================
+// ==================== 최소 정규화 ====================
 function normalizeReportJson(raw: any) {
   const r = typeof raw === 'object' && raw ? { ...raw } : {};
 
@@ -95,13 +62,10 @@ export async function POST(req: NextRequest) {
     const { ticker, companyName } = body;
 
     if (!ticker && !companyName) {
-      return NextResponse.json(
-        { error: '티커 또는 회사명이 필요합니다.' },
-        { status: 400, headers }
-      );
+      return NextResponse.json({ error: '티커 또는 회사명이 필요합니다.' }, { status: 400, headers });
     }
 
-    // ==================== USER ====================
+    // 🔐 사용자 확인
     const { data } = await supabase.auth.getUser();
     const user = data?.user;
 
@@ -109,18 +73,17 @@ export async function POST(req: NextRequest) {
     console.log('USER ID:', user?.id);
 
     if (!user) {
-      return NextResponse.json(
-        { error: 'Unauthorized' },
-        { status: 401, headers }
-      );
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401, headers });
     }
 
-    // ==================== MARKET ====================
-    const market = detectMarket(ticker, companyName);
+    const market =
+      ticker?.includes('.KS') || ticker?.includes('.KQ') || companyName?.includes('주식회사')
+        ? 'KR'
+        : 'US';
 
     const systemPrompt = market === 'US' ? US_PROMPT : KR_PROMPT;
 
-    // ==================== MODEL 실행 ====================
+    // ==================== 모델 순차 실행 ====================
     let text = '';
     let lastError: any;
 
@@ -131,15 +94,9 @@ export async function POST(req: NextRequest) {
         const result = await generateText({
           model: google(modelId),
           system: systemPrompt,
-          prompt: `
-Reference Date: ${new Date().toISOString().split('T')[0]}
+          prompt: `Reference Date: ${new Date().toISOString().split('T')[0]}
 Company: ${ticker || companyName}
-
-IMPORTANT:
-- 반드시 "latest_source_date" 포함 (YYYY-MM-DD)
-- 최신 데이터만 사용
-- JSON만 반환
-`,
+Return ONLY valid JSON.`,
         });
 
         text = result.text;
@@ -174,43 +131,23 @@ IMPORTANT:
 
     reportJson = normalizeReportJson(reportJson);
 
-    // ==================== 최신 데이터 판정 ====================
-    const latestDate = reportJson.latest_source_date ?? null;
-    const classification = classifyInvestment(latestDate);
-
-    reportJson.report_meta = {
-      generated_at: new Date().toISOString(),
-      latest_source_date: latestDate,
-      investment_horizon: classification,
-    };
-
-    // ==================== 이미지 ====================
+    // 이미지 삽입
     reportJson = await insertImagesIntoReport(reportJson);
 
-    // ==================== ZIP ====================
+    // ==================== ZIP 생성 ====================
     const zip = new JSZip();
     zip.file('report.json', JSON.stringify(reportJson, null, 2));
     const zipBytes = await zip.generateAsync({ type: 'uint8array' });
 
-    const safeTicker = (ticker || companyName || 'report').replace(
-      /[^a-zA-Z0-9._-]/g,
-      '_'
-    );
-
+    const safeTicker = (ticker || companyName || 'report').replace(/[^a-zA-Z0-9._-]/g, '_');
     const filePath = `${user.id}/${safeTicker}-${Date.now()}.zip`;
 
-    // ==================== STORAGE ====================
+    // ==================== Storage ====================
     const { error: uploadErr } = await supabase.storage
       .from('reports')
-      .upload(filePath, zipBytes, {
-        contentType: 'application/zip',
-        upsert: true,
-      });
+      .upload(filePath, zipBytes, { contentType: 'application/zip', upsert: true });
 
-    if (uploadErr) {
-      console.error('🚨 STORAGE ERROR:', uploadErr);
-      throw uploadErr;
-    }
+    if (uploadErr) throw uploadErr;
 
     // ==================== DB ====================
     const { data: dbData, error: dbErr } = await supabase
@@ -225,16 +162,9 @@ IMPORTANT:
       .select()
       .single();
 
-    if (dbErr) {
-      console.error('🚨 DB ERROR:', dbErr);
-      throw dbErr;
-    }
+    if (dbErr) throw dbErr;
 
-    return NextResponse.json(
-      { reportId: dbData.id, report: reportJson },
-      { headers }
-    );
-
+    return NextResponse.json({ reportId: dbData.id, report: reportJson }, { headers });
   } catch (err: any) {
     console.error('🚨 generate-report failed:', err?.message ?? err);
 
