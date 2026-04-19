@@ -29,7 +29,7 @@ function cleanJson(text: string): string {
     .trim();
 }
 
-// ==================== PDF 생성 (디자인 업그레이드) ====================
+// ==================== PDF 생성 ====================
 async function generatePdf(report: any, req: NextRequest) {
   const pdfDoc = await PDFDocument.create();
   pdfDoc.registerFontkit(fontkit);
@@ -44,117 +44,56 @@ async function generatePdf(report: any, req: NextRequest) {
   const { width, height } = page.getSize();
 
   const margin = 50;
-  const contentWidth = width - margin * 2;
+  const maxWidth = width - margin * 2;
   let y = height - margin;
-
-  const styles = {
-    title: 22,
-    subtitle: 14,
-    header: 13,
-    body: 11,
-  };
 
   function newPage() {
     page = pdfDoc.addPage([595, 842]);
     y = height - margin;
   }
 
-  function wrapText(text: string, size: number) {
+  function wrap(text: string, size: number) {
     const chars = text.split('');
     const lines: string[] = [];
-    let current = '';
+    let cur = '';
 
     for (const ch of chars) {
-      const test = current + ch;
-      const w = font.widthOfTextAtSize(test, size);
-
-      if (w > contentWidth && current !== '') {
-        lines.push(current);
-        current = ch;
+      const test = cur + ch;
+      if (font.widthOfTextAtSize(test, size) > maxWidth && cur) {
+        lines.push(cur);
+        cur = ch;
       } else {
-        current = test;
+        cur = test;
       }
     }
-
-    if (current) lines.push(current);
+    if (cur) lines.push(cur);
     return lines;
   }
 
-  function drawText(text: string, size: number, gap = 6) {
-    const lines = wrapText(text, size);
-
+  function draw(text: string, size = 11) {
+    const lines = wrap(text, size);
     for (const line of lines) {
       if (y < margin) newPage();
-
-      page.drawText(line, {
-        x: margin,
-        y,
-        size,
-        font,
-      });
-
+      page.drawText(line, { x: margin, y, size, font });
       y -= size + 4;
     }
-
-    y -= gap;
+    y -= 6;
   }
 
-  function drawDivider() {
-    if (y < margin) newPage();
-
-    page.drawLine({
-      start: { x: margin, y },
-      end: { x: width - margin, y },
-      thickness: 1,
-    });
-
-    y -= 10;
-  }
-
-  function drawSection(title: string) {
-    drawText(title, styles.header);
-    drawDivider();
-  }
-
-  function drawList(arr: any[]) {
-    if (!arr || !Array.isArray(arr)) return;
-
-    arr.forEach((item) => {
-      drawText(`• ${item}`, styles.body);
-    });
-
-    y -= 4;
-  }
-
-  function formatSection(v: any) {
-    if (!v) return '';
-    if (typeof v === 'string') return v;
-    return JSON.stringify(v, null, 2);
-  }
-
-  // ==================== COVER ====================
-  drawText('Investment Report', styles.title, 12);
-  drawText(`${report.company || ''}`, styles.subtitle);
-  drawText(`Ticker: ${report.ticker || ''}`, styles.body);
-  drawText(`Date: ${new Date().toISOString().split('T')[0]}`, styles.body);
+  draw(`Investment Report`, 20);
+  draw(`${report.company || ''}`, 14);
+  draw(`Ticker: ${report.ticker || ''}`);
 
   newPage();
 
-  // ==================== SUMMARY ====================
-  drawSection('Executive Summary');
-  drawText(formatSection(report.overview), styles.body);
+  draw(`[Overview]`);
+  draw(JSON.stringify(report.overview ?? '', null, 2));
 
-  // ==================== OVERVIEW ====================
-  drawSection('Company Overview');
-  drawText(formatSection(report.overview), styles.body);
+  draw(`[Key Insights]`);
+  (report.key_insights || []).forEach((x: any) => draw(`• ${x}`));
 
-  // ==================== INSIGHTS ====================
-  drawSection('Key Insights');
-  drawList(report.key_insights);
-
-  // ==================== RISKS ====================
-  drawSection('Risks');
-  drawList(report.risks);
+  draw(`[Risks]`);
+  (report.risks || []).forEach((x: any) => draw(`• ${x}`));
 
   return await pdfDoc.save();
 }
@@ -214,7 +153,7 @@ Return ONLY valid JSON.`,
     }
 
     if (!text) {
-      throw new Error(`모든 Gemini 모델 실패: ${lastError?.message}`);
+      throw new Error(`모델 실패: ${lastError?.message}`);
     }
 
     const cleaned = cleanJson(text);
@@ -223,12 +162,12 @@ Return ONLY valid JSON.`,
     try {
       reportJson = JSON.parse(cleaned);
     } catch {
-      throw new Error('모델이 올바른 json을 반환하지 않았습니다');
+      throw new Error('JSON 파싱 실패');
     }
 
     reportJson = await insertImagesIntoReport(reportJson);
 
-    // ==================== PDF 생성 ====================
+    // ==================== PDF ====================
     const pdfBytes = await generatePdf(reportJson, req);
 
     // ==================== ZIP ====================
@@ -240,11 +179,17 @@ Return ONLY valid JSON.`,
 
     const filePath = `${user.id}/${Date.now()}.zip`;
 
-    await supabase.storage
+    const { error: uploadErr } = await supabase.storage
       .from('reports')
       .upload(filePath, zipBytes, { upsert: true });
 
-    const { data: dbData } = await supabase
+    if (uploadErr) {
+      console.error('STORAGE ERROR:', uploadErr);
+      throw new Error(uploadErr.message);
+    }
+
+    // ==================== DB INSERT (핵심 수정) ====================
+    const { data: dbData, error: dbErr } = await supabase
       .from('reports')
       .insert({
         user_id: user.id,
@@ -256,15 +201,24 @@ Return ONLY valid JSON.`,
       .select()
       .single();
 
+    if (dbErr) {
+      console.error('DB ERROR:', dbErr);
+      throw new Error(dbErr.message);
+    }
+
+    if (!dbData) {
+      console.error('DB DATA NULL');
+      throw new Error('DB insert ok but no data returned (RLS 문제)');
+    }
+
     return NextResponse.json(
       { reportId: dbData.id, report: reportJson },
       { headers }
     );
   } catch (err: any) {
-    console.error(err);
-
+    console.error('🚨 ERROR:', err?.message);
     return NextResponse.json(
-      { error: err.message },
+      { error: err?.message ?? 'unknown error' },
       { status: 500 }
     );
   }
