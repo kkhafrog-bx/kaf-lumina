@@ -24,10 +24,12 @@ export default function ReportList() {
       .select('*')
       .order('created_at', { ascending: false });
 
-    setReports(data || []);
+    setReports(Array.isArray(data) ? data : []);
   };
 
-  const getUrl = (path: string) => {
+  // 🔥 안전 URL 생성
+  const getUrl = (path?: string | null) => {
+    if (!path) return '';
     return supabase.storage.from('reports').getPublicUrl(path).data.publicUrl;
   };
 
@@ -38,31 +40,39 @@ export default function ReportList() {
       </h2>
 
       <div className="space-y-6">
-        {reports.map((r) => (
-          <div
-            key={r.id}
-            onClick={() => router.push(`/report/${r.id}`)}
-            className="border border-gray-800 rounded-lg p-4 bg-black cursor-pointer hover:border-orange-400"
-          >
-            <div className="flex justify-between items-center">
-              <div>
-                <div className="text-white font-bold">{r.ticker}</div>
-                <div className="text-gray-400 text-sm">
-                  {new Date(r.created_at).toLocaleString()}
+        {reports.map((r) => {
+          const pdfUrl = getUrl(r.pdf_path);
+          const zipUrl = getUrl(r.notebook_zip_path || r.json_path);
+
+          return (
+            <div
+              key={r.id}
+              onClick={() => router.push(`/report/${r.id}`)}
+              className="border border-gray-800 rounded-lg p-4 bg-black cursor-pointer hover:border-orange-400"
+            >
+              <div className="flex justify-between items-center">
+                <div>
+                  <div className="text-white font-bold">{r.ticker}</div>
+                  <div className="text-gray-400 text-sm">
+                    {r.created_at
+                      ? new Date(r.created_at).toLocaleString()
+                      : ''}
+                  </div>
+                </div>
+
+                <div className="text-sm text-gray-500">
+                  {r.region || ''}
                 </div>
               </div>
 
-              <div className="text-sm text-gray-500">
-                {r.region}
-              </div>
+              {/* 🔥 여기 안전하게 */}
+              <DownloadButtons
+                pdfUrl={pdfUrl}
+                zipUrl={zipUrl}
+              />
             </div>
-
-            <DownloadButtons
-              pdfUrl={getUrl(r.pdf_path)}
-              zipUrl={getUrl(r.json_path)}
-            />
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
