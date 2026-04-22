@@ -12,14 +12,12 @@ import { insertImagesIntoReport } from '@/lib/imageUtils';
 
 export const runtime = 'nodejs';
 
-// 🔥 Gemini 자동 fallback 리스트 (최신 → 하위)
 const GEMINI_MODELS = [
   'gemini-2.5-flash',
   'gemini-1.5-pro',
-  'gemini-1.5-flash'
+  'gemini-1.5-flash',
 ];
 
-// ================= JSON 정리 =================
 function cleanJson(text: string): string {
   return text
     .trim()
@@ -29,25 +27,18 @@ function cleanJson(text: string): string {
     .trim();
 }
 
-// ================= Gemini 자동 탐색 =================
 async function generateWithGemini(systemPrompt: string, prompt: string) {
   let lastError: any;
 
   for (const modelName of GEMINI_MODELS) {
     try {
-      console.log('🚀 시도 모델:', modelName);
-
       const { text } = await generateText({
         model: google(modelName),
         system: systemPrompt,
         prompt,
       });
-
-      console.log('✅ 성공 모델:', modelName);
       return text;
-
     } catch (err) {
-      console.error('❌ 실패 모델:', modelName);
       lastError = err;
     }
   }
@@ -55,7 +46,6 @@ async function generateWithGemini(systemPrompt: string, prompt: string) {
   throw new Error('모든 Gemini 모델 실패: ' + lastError?.message);
 }
 
-// ================= PDF =================
 async function generatePdf(report: any) {
   const pdfDoc = await PDFDocument.create();
   pdfDoc.registerFontkit(fontkit);
@@ -96,7 +86,6 @@ async function generatePdf(report: any) {
   return await pdfDoc.save();
 }
 
-// ================= API =================
 export async function POST(req: NextRequest) {
   const { supabase, headers } = createSupabaseServerClient(req);
 
@@ -130,14 +119,12 @@ export async function POST(req: NextRequest) {
 
     let rawText: string;
 
-    // 🔥 핵심 분기
     if (llm === 'gemini') {
       rawText = await generateWithGemini(
         systemPrompt,
         `Company: ${ticker || companyName}\nReturn ONLY valid JSON.`
       );
     } else {
-      // 🔥 아직 미구현 엔진
       return NextResponse.json(
         { error: `${llm} 엔진은 아직 준비되지 않았습니다.` },
         { status: 400, headers }
@@ -162,6 +149,7 @@ export async function POST(req: NextRequest) {
     const zipPath = `${baseName}.zip`;
     const pdfPath = `${baseName}.pdf`;
 
+    // Storage 업로드
     await supabase.storage.from('reports').upload(zipPath, zipBytes, {
       contentType: 'application/zip',
       upsert: true,
@@ -172,6 +160,7 @@ export async function POST(req: NextRequest) {
       upsert: true,
     });
 
+    // 🔥 핵심: DB에 pdf_path 저장
     await supabase.from('reports').insert({
       user_id: user.id,
       ticker,
@@ -193,8 +182,6 @@ export async function POST(req: NextRequest) {
     );
 
   } catch (err: any) {
-    console.error('🚨 generate-report failed:', err);
-
     return NextResponse.json(
       { error: err.message },
       { status: 500 }

@@ -51,7 +51,6 @@ export default function ReportList() {
                 </div>
               </div>
 
-              {/* 🔥 PDF 다운로드만 */}
               <div className="mt-3">
                 {pdfUrl ? (
                   <a
