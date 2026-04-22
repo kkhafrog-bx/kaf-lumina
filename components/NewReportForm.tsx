@@ -1,70 +1,68 @@
 'use client';
 
 import { useState } from 'react';
-import DownloadButtons from './DownloadButtons';
 
 export default function NewReportForm() {
+  const [ticker, setTicker] = useState('');
+  const [companyName, setCompanyName] = useState('');
   const [loading, setLoading] = useState(false);
-  const [report, setReport] = useState<any>(null);
-  const [pdfUrl, setPdfUrl] = useState('');
-  const [zipUrl, setZipUrl] = useState('');
   const [error, setError] = useState('');
 
   const handleGenerate = async () => {
+    if (!ticker.trim()) {
+      setError('티커는 필수다');
+      return;
+    }
+
     setLoading(true);
     setError('');
-    setReport(null);
 
     try {
       const res = await fetch('/api/generate-report', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ticker: '005930' }),
+        body: JSON.stringify({ ticker, companyName }),
       });
 
       const data = await res.json();
 
       if (!res.ok) throw new Error(data.error);
 
-      setReport(data.report);
-      setPdfUrl(data.pdfUrl);
-      setZipUrl(data.zipUrl);
+      // 🔥 핵심: 생성 후 리스트 갱신
+      window.location.reload();
+
     } catch (err: any) {
-      setError(err.message);
+      setError(err.message || '에러');
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="space-y-6">
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 space-y-4">
 
-      {/* 생성 버튼 */}
+      <input
+        value={ticker}
+        onChange={(e) => setTicker(e.target.value)}
+        placeholder="Ticker (필수)"
+        className="w-full px-4 py-3 bg-black border border-gray-700 rounded text-white"
+      />
+
+      <input
+        value={companyName}
+        onChange={(e) => setCompanyName(e.target.value)}
+        placeholder="Company Name (선택)"
+        className="w-full px-4 py-3 bg-black border border-gray-700 rounded text-white"
+      />
+
       <button
         onClick={handleGenerate}
-        className="px-6 py-3 bg-teal-500 rounded-xl text-white"
+        className="w-full py-3 bg-teal-500 rounded font-bold"
       >
         {loading ? '생성 중...' : '리포트 생성'}
       </button>
 
       {error && <div className="text-red-400">{error}</div>}
-
-      {/* 🔥 핵심: 생성 결과 바로 보여줌 */}
-      {report && (
-        <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 space-y-4">
-
-          <div className="text-xl font-bold text-white">
-            {report?.overview?.title || 'Report'}
-          </div>
-
-          <div className="text-gray-300 text-sm whitespace-pre-wrap">
-            {report?.overview?.company_profile || '내용 없음'}
-          </div>
-
-          {/* 🔥 다운로드 버튼은 여기 */}
-          <DownloadButtons pdfUrl={pdfUrl} zipUrl={zipUrl} />
-        </div>
-      )}
     </div>
   );
 }
