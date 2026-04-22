@@ -2,12 +2,9 @@
 
 import { useEffect, useState } from 'react';
 import { createClient } from '@supabase/supabase-js';
-import DownloadButtons from './DownloadButtons';
-import { useRouter } from 'next/navigation';
 
 export default function ReportList() {
   const [reports, setReports] = useState<any[]>([]);
-  const router = useRouter();
 
   const supabase = createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -27,49 +24,49 @@ export default function ReportList() {
     setReports(Array.isArray(data) ? data : []);
   };
 
-  // 🔥 안전 URL 생성
-  const getUrl = (path?: string | null) => {
+  const getPdfUrl = (path?: string) => {
     if (!path) return '';
     return supabase.storage.from('reports').getPublicUrl(path).data.publicUrl;
   };
 
   return (
     <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-      <h2 className="text-lg font-semibold text-orange-400 mb-6">
-        Reports
-      </h2>
+      <h2 className="text-orange-400 font-bold mb-4">Reports</h2>
 
-      <div className="space-y-6">
+      <div className="space-y-3">
         {reports.map((r) => {
-          const pdfUrl = getUrl(r.pdf_path);
-          const zipUrl = getUrl(r.notebook_zip_path || r.json_path);
+          const pdfUrl = getPdfUrl(r.pdf_path);
 
           return (
-            <div
-              key={r.id}
-              onClick={() => router.push(`/report/${r.id}`)}
-              className="border border-gray-800 rounded-lg p-4 bg-black cursor-pointer hover:border-orange-400"
-            >
+            <div key={r.id} className="p-4 border border-gray-700 rounded">
               <div className="flex justify-between items-center">
-                <div>
-                  <div className="text-white font-bold">{r.ticker}</div>
-                  <div className="text-gray-400 text-sm">
-                    {r.created_at
-                      ? new Date(r.created_at).toLocaleString()
-                      : ''}
-                  </div>
+                <div className="text-white font-bold">
+                  {r.ticker || 'N/A'}
                 </div>
 
-                <div className="text-sm text-gray-500">
-                  {r.region || ''}
+                <div className="text-gray-400 text-sm">
+                  {r.created_at
+                    ? new Date(r.created_at).toLocaleString()
+                    : ''}
                 </div>
               </div>
 
-              {/* 🔥 여기 안전하게 */}
-              <DownloadButtons
-                pdfUrl={pdfUrl}
-                zipUrl={zipUrl}
-              />
+              {/* 🔥 PDF 다운로드만 */}
+              <div className="mt-3">
+                {pdfUrl ? (
+                  <a
+                    href={pdfUrl}
+                    target="_blank"
+                    className="px-4 py-2 bg-orange-500 rounded text-sm font-bold hover:bg-orange-600"
+                  >
+                    PDF 다운로드
+                  </a>
+                ) : (
+                  <div className="text-gray-500 text-sm">
+                    PDF 없음
+                  </div>
+                )}
+              </div>
             </div>
           );
         })}
