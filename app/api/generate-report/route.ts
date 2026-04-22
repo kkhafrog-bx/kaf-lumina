@@ -12,7 +12,7 @@ import { insertImagesIntoReport } from '@/lib/imageUtils';
 
 export const runtime = 'nodejs';
 
-// 🔥 Gemini fallback 순서 (최신 → 구버전)
+// 🔥 Gemini 자동 fallback 리스트 (최신 → 하위)
 const GEMINI_MODELS = [
   'gemini-2.5-flash',
   'gemini-1.5-pro',
@@ -29,8 +29,8 @@ function cleanJson(text: string): string {
     .trim();
 }
 
-// ================= Gemini 자동 fallback =================
-async function generateWithGeminiFallback(systemPrompt: string, prompt: string) {
+// ================= Gemini 자동 탐색 =================
+async function generateWithGemini(systemPrompt: string, prompt: string) {
   let lastError: any;
 
   for (const modelName of GEMINI_MODELS) {
@@ -47,7 +47,7 @@ async function generateWithGeminiFallback(systemPrompt: string, prompt: string) 
       return text;
 
     } catch (err) {
-      console.error('❌ 실패 모델:', modelName, err);
+      console.error('❌ 실패 모델:', modelName);
       lastError = err;
     }
   }
@@ -55,13 +55,13 @@ async function generateWithGeminiFallback(systemPrompt: string, prompt: string) 
   throw new Error('모든 Gemini 모델 실패: ' + lastError?.message);
 }
 
-// ================= PDF 생성 =================
+// ================= PDF =================
 async function generatePdf(report: any) {
   const pdfDoc = await PDFDocument.create();
   pdfDoc.registerFontkit(fontkit);
 
   const fontUrl = `${process.env.NEXT_PUBLIC_BASE_URL}/fonts/NotoSansKR-Regular.ttf`;
-  const fontBytes = await fetch(fontUrl).then((res) => res.arrayBuffer());
+  const fontBytes = await fetch(fontUrl).then(res => res.arrayBuffer());
   const font = await pdfDoc.embedFont(fontBytes);
 
   const pageWidth = 595;
@@ -69,12 +69,11 @@ async function generatePdf(report: any) {
   const margin = 50;
   const fontSize = 10;
   const lineHeight = 16;
-  const maxWidth = pageWidth - margin * 2;
 
   let page = pdfDoc.addPage([pageWidth, pageHeight]);
   let y = pageHeight - margin;
 
-  const drawLine = (text: string) => {
+  const draw = (text: string) => {
     if (y < margin) {
       page = pdfDoc.addPage([pageWidth, pageHeight]);
       y = pageHeight - margin;
@@ -85,17 +84,14 @@ async function generatePdf(report: any) {
       y,
       size: fontSize,
       font,
-      maxWidth,
+      maxWidth: pageWidth - margin * 2,
     });
 
     y -= lineHeight;
   };
 
   const lines = JSON.stringify(report, null, 2).split('\n');
-
-  for (const line of lines) {
-    drawLine(line);
-  }
+  lines.forEach(draw);
 
   return await pdfDoc.save();
 }
@@ -106,7 +102,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { ticker, companyName } = body;
+    const { ticker, companyName, llm } = body;
 
     if (!ticker && !companyName) {
       return NextResponse.json(
@@ -132,32 +128,35 @@ export async function POST(req: NextRequest) {
 
     const systemPrompt = market === 'US' ? US_PROMPT : KR_PROMPT;
 
-    // 🔥 Gemini fallback 실행
-    const rawText = await generateWithGeminiFallback(
-      systemPrompt,
-      `
-Company: ${ticker || companyName}
+    let rawText: string;
 
-Return ONLY valid JSON.
-`
-    );
+    // 🔥 핵심 분기
+    if (llm === 'gemini') {
+      rawText = await generateWithGemini(
+        systemPrompt,
+        `Company: ${ticker || companyName}\nReturn ONLY valid JSON.`
+      );
+    } else {
+      // 🔥 아직 미구현 엔진
+      return NextResponse.json(
+        { error: `${llm} 엔진은 아직 준비되지 않았습니다.` },
+        { status: 400, headers }
+      );
+    }
 
     const cleaned = cleanJson(rawText);
     const reportJson = JSON.parse(cleaned);
 
     const enriched = await insertImagesIntoReport(reportJson);
 
-    // ================= PDF =================
     const pdfBytes = await generatePdf(enriched);
 
-    // ================= ZIP =================
     const zip = new JSZip();
     zip.file('report.json', JSON.stringify(enriched, null, 2));
     zip.file('report.pdf', pdfBytes);
 
     const zipBytes = await zip.generateAsync({ type: 'uint8array' });
 
-    // ================= Storage =================
     const baseName = `${user.id}/${(ticker || 'report')}-${Date.now()}`;
 
     const zipPath = `${baseName}.zip`;
@@ -173,7 +172,6 @@ Return ONLY valid JSON.
       upsert: true,
     });
 
-    // ================= DB =================
     await supabase.from('reports').insert({
       user_id: user.id,
       ticker,
@@ -182,7 +180,6 @@ Return ONLY valid JSON.
       notebook_zip_path: zipPath,
     });
 
-    // ================= URL =================
     const { data: pdfUrlData } = supabase.storage
       .from('reports')
       .getPublicUrl(pdfPath);
@@ -194,6 +191,7 @@ Return ONLY valid JSON.
       },
       { headers }
     );
+
   } catch (err: any) {
     console.error('🚨 generate-report failed:', err);
 
