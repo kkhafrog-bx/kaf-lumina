@@ -5,6 +5,8 @@ import { google } from '@ai-sdk/google';
 import JSZip from 'jszip';
 import { PDFDocument } from 'pdf-lib';
 import fontkit from '@pdf-lib/fontkit';
+import fs from 'fs';
+import path from 'path';
 
 import { createSupabaseServerClient } from '@/lib/supabase/server';
 import { US_PROMPT, KR_PROMPT } from '@/lib/prompts';
@@ -29,8 +31,10 @@ async function generatePdf(report: any) {
   const pdfDoc = await PDFDocument.create();
   pdfDoc.registerFontkit(fontkit);
 
-  const fontUrl = `${process.env.NEXT_PUBLIC_BASE_URL}/fonts/NotoSansKR-Regular.ttf`;
-  const fontBytes = await fetch(fontUrl).then((res) => res.arrayBuffer());
+  // 🔥 로컬 폰트 로드 (핵심 수정)
+  const fontPath = path.join(process.cwd(), 'public/fonts/NotoSansKR-Regular.ttf');
+  const fontBytes = fs.readFileSync(fontPath);
+
   const font = await pdfDoc.embedFont(fontBytes);
 
   const pageWidth = 595;
@@ -134,25 +138,21 @@ Return ONLY valid JSON.
 
     const zipBytes = await zip.generateAsync({ type: 'uint8array' });
 
-    // ================= Storage =================
     const baseName = `${user.id}/${(ticker || 'report')}-${Date.now()}`;
 
     const zipPath = `${baseName}.zip`;
     const pdfPath = `${baseName}.pdf`;
 
-    // ZIP 업로드
     await supabase.storage.from('reports').upload(zipPath, zipBytes, {
       contentType: 'application/zip',
       upsert: true,
     });
 
-    // PDF 업로드 (단독 다운로드용)
     await supabase.storage.from('reports').upload(pdfPath, pdfBytes, {
       contentType: 'application/pdf',
       upsert: true,
     });
 
-    // ================= URL 생성 =================
     const { data: zipUrlData } = supabase.storage
       .from('reports')
       .getPublicUrl(zipPath);
@@ -170,6 +170,7 @@ Return ONLY valid JSON.
       { headers }
     );
   } catch (err: any) {
+    console.error('🚨 ERROR:', err);
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }
