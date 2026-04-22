@@ -5,73 +5,65 @@ import DownloadButtons from './DownloadButtons';
 
 export default function NewReportForm() {
   const [loading, setLoading] = useState(false);
-  const [pdfUrl, setPdfUrl] = useState<string | null>(null);
-  const [zipUrl, setZipUrl] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [report, setReport] = useState<any>(null);
+  const [pdfUrl, setPdfUrl] = useState('');
+  const [zipUrl, setZipUrl] = useState('');
+  const [error, setError] = useState('');
 
   const handleGenerate = async () => {
     setLoading(true);
-    setError(null);
-    setPdfUrl(null);
-    setZipUrl(null);
+    setError('');
+    setReport(null);
 
     try {
       const res = await fetch('/api/generate-report', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ticker: '005930' }),
       });
 
-      let data: any = null;
+      const data = await res.json();
 
-      try {
-        data = await res.json();
-      } catch {
-        throw new Error('응답 JSON 파싱 실패');
-      }
+      if (!res.ok) throw new Error(data.error);
 
-      if (!res.ok) {
-        throw new Error(data?.error || '서버 오류');
-      }
-
-      // 🔥 안전하게 존재 확인
-      if (typeof data?.pdfUrl === 'string') {
-        setPdfUrl(data.pdfUrl);
-      }
-
-      if (typeof data?.zipUrl === 'string') {
-        setZipUrl(data.zipUrl);
-      }
-
+      setReport(data.report);
+      setPdfUrl(data.pdfUrl);
+      setZipUrl(data.zipUrl);
     } catch (err: any) {
-      console.error('generate error:', err);
-      setError(err?.message || '에러 발생');
+      setError(err.message);
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="mt-8 flex flex-col items-center gap-4">
+    <div className="space-y-6">
+
+      {/* 생성 버튼 */}
       <button
         onClick={handleGenerate}
-        className="px-6 py-3 bg-teal-500 text-white rounded-xl hover:bg-teal-600"
+        className="px-6 py-3 bg-teal-500 rounded-xl text-white"
       >
         {loading ? '생성 중...' : '리포트 생성'}
       </button>
 
-      {error && (
-        <div className="text-red-400 text-sm">{error}</div>
-      )}
+      {error && <div className="text-red-400">{error}</div>}
 
-      {/* 🔥 안전 렌더링 */}
-      {(pdfUrl || zipUrl) && (
-        <DownloadButtons
-          pdfUrl={pdfUrl || ''}
-          zipUrl={zipUrl || ''}
-        />
+      {/* 🔥 핵심: 생성 결과 바로 보여줌 */}
+      {report && (
+        <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 space-y-4">
+
+          <div className="text-xl font-bold text-white">
+            {report?.overview?.title || 'Report'}
+          </div>
+
+          <div className="text-gray-300 text-sm whitespace-pre-wrap">
+            {report?.overview?.company_profile || '내용 없음'}
+          </div>
+
+          {/* 🔥 다운로드 버튼은 여기 */}
+          <DownloadButtons pdfUrl={pdfUrl} zipUrl={zipUrl} />
+        </div>
       )}
     </div>
   );
