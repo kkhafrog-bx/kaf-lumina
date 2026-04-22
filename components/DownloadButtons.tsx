@@ -7,8 +7,6 @@ export default function DownloadButtons({
   pdfUrl: string;
   zipUrl: string;
 }) {
-  if (!pdfUrl && !zipUrl) return null;
-
   return (
     <div className="flex gap-3 mt-4">
       {pdfUrl && (

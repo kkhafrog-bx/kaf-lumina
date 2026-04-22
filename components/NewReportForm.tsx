@@ -1,56 +1,63 @@
 'use client';
 
 import { useState } from 'react';
+import DownloadButtons from './DownloadButtons';
 
 export default function NewReportForm() {
-  const [ticker, setTicker] = useState('');
   const [loading, setLoading] = useState(false);
+  const [pdfUrl, setPdfUrl] = useState<string>('');
+  const [zipUrl, setZipUrl] = useState<string>('');
+  const [error, setError] = useState<string>('');
 
-  const generate = async () => {
-    if (!ticker) return;
-
+  const handleGenerate = async () => {
     setLoading(true);
+    setError('');
+    setPdfUrl('');
+    setZipUrl('');
 
-    const res = await fetch('/api/generate-report', {
-      method: 'POST',
-      body: JSON.stringify({ ticker }),
-    });
+    try {
+      const res = await fetch('/api/generate-report', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          ticker: '005930',
+        }),
+      });
 
-    const data = await res.json();
+      const data = await res.json();
 
-    setLoading(false);
+      if (!res.ok) {
+        throw new Error(data.error || '생성 실패');
+      }
 
-    if (data.error) {
-      alert(data.error);
-      return;
+      // 🔥 핵심: 여기서 반드시 세팅
+      setPdfUrl(data.pdfUrl || '');
+      setZipUrl(data.zipUrl || '');
+    } catch (err: any) {
+      console.error(err);
+      setError(err.message || '에러 발생');
+    } finally {
+      setLoading(false);
     }
-
-    alert('보고서 생성 완료');
-    location.reload();
   };
 
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-      <h2 className="text-lg font-semibold text-orange-400 mb-4">
-        New Report
-      </h2>
+    <div className="mt-8 flex flex-col items-center gap-4">
+      <button
+        onClick={handleGenerate}
+        className="px-6 py-3 bg-teal-500 text-white rounded-xl hover:bg-teal-600"
+      >
+        {loading ? '생성 중...' : '리포트 생성'}
+      </button>
 
-      <div className="flex gap-4">
-        <input
-          value={ticker}
-          onChange={(e) => setTicker(e.target.value)}
-          placeholder="Ticker (ex: AAPL, 005930)"
-          className="flex-1 bg-black border border-gray-700 rounded px-4 py-2 text-white"
-        />
+      {error && (
+        <div className="text-red-400 text-sm">{error}</div>
+      )}
 
-        <button
-          onClick={generate}
-          disabled={loading}
-          className="bg-orange-500 px-6 py-2 rounded font-bold hover:bg-orange-600"
-        >
-          {loading ? '생성중...' : 'Generate'}
-        </button>
-      </div>
+      {/* 🔥 버튼 렌더링 */}
+      <DownloadButtons pdfUrl={pdfUrl} zipUrl={zipUrl} />
     </div>
   );
 }
