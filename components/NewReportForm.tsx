@@ -5,7 +5,7 @@ import { useState } from 'react';
 export default function NewReportForm() {
   const [ticker, setTicker] = useState('');
   const [companyName, setCompanyName] = useState('');
-  const [engine, setEngine] = useState('gemini-2.5-flash');
+  const [llm, setLlm] = useState<'grok' | 'gpt' | 'claude' | 'gemini'>('gemini');
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -26,7 +26,7 @@ export default function NewReportForm() {
         body: JSON.stringify({
           ticker,
           companyName,
-          engine, // 🔥 추가
+          llm, // 🔥 핵심: llm으로 통일
         }),
       });
 
@@ -34,9 +34,7 @@ export default function NewReportForm() {
 
       if (!res.ok) throw new Error(data.error);
 
-      // 생성 후 리스트 갱신
       window.location.reload();
-
     } catch (err: any) {
       setError(err.message || '에러');
     } finally {
@@ -63,14 +61,16 @@ export default function NewReportForm() {
         className="w-full px-4 py-3 bg-black border border-gray-700 rounded text-white"
       />
 
-      {/* 🔥 AI 엔진 선택 */}
+      {/* 🔥 엔진 선택 복구 */}
       <select
-        value={engine}
-        onChange={(e) => setEngine(e.target.value)}
+        value={llm}
+        onChange={(e) => setLlm(e.target.value as any)}
         className="w-full px-4 py-3 bg-black border border-gray-700 rounded text-white"
       >
-        <option value="gemini-2.5-flash">Gemini 2.5 Flash (빠름)</option>
-        <option value="gemini-1.5-pro">Gemini 1.5 Pro (정확도)</option>
+        <option value="grok">Grok</option>
+        <option value="gpt">GPT</option>
+        <option value="claude">Claude</option>
+        <option value="gemini">Gemini (자동 선택)</option>
       </select>
 
       {/* 버튼 */}

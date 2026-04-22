@@ -12,12 +12,14 @@ import { insertImagesIntoReport } from '@/lib/imageUtils';
 
 export const runtime = 'nodejs';
 
+// 🔥 Gemini 자동 fallback
 const GEMINI_MODELS = [
   'gemini-2.5-flash',
+  'gemini-2.5-flash-lite',
   'gemini-1.5-pro',
-  'gemini-1.5-flash',
 ];
 
+// ================= JSON 정리 =================
 function cleanJson(text: string): string {
   return text
     .trim()
@@ -27,6 +29,7 @@ function cleanJson(text: string): string {
     .trim();
 }
 
+// ================= Gemini 자동 선택 =================
 async function generateWithGemini(systemPrompt: string, prompt: string) {
   let lastError: any;
 
@@ -46,6 +49,7 @@ async function generateWithGemini(systemPrompt: string, prompt: string) {
   throw new Error('모든 Gemini 모델 실패: ' + lastError?.message);
 }
 
+// ================= PDF =================
 async function generatePdf(report: any) {
   const pdfDoc = await PDFDocument.create();
   pdfDoc.registerFontkit(fontkit);
@@ -86,6 +90,7 @@ async function generatePdf(report: any) {
   return await pdfDoc.save();
 }
 
+// ================= API =================
 export async function POST(req: NextRequest) {
   const { supabase, headers } = createSupabaseServerClient(req);
 
@@ -119,16 +124,44 @@ export async function POST(req: NextRequest) {
 
     let rawText: string;
 
+    const prompt = `Company: ${ticker || companyName}\nReturn ONLY valid JSON.`;
+
+    // ================= 🔥 엔진 분기 =================
     if (llm === 'gemini') {
-      rawText = await generateWithGemini(
-        systemPrompt,
-        `Company: ${ticker || companyName}\nReturn ONLY valid JSON.`
-      );
+      rawText = await generateWithGemini(systemPrompt, prompt);
+
+    } else if (llm === 'gpt') {
+      // 🔥 GPT (OpenAI)
+      const { openai } = await import('@ai-sdk/openai');
+      const { text } = await generateText({
+        model: openai('gpt-4o'),
+        system: systemPrompt,
+        prompt,
+      });
+      rawText = text;
+
+    } else if (llm === 'claude') {
+      // 🔥 Claude (Anthropic)
+      const { anthropic } = await import('@ai-sdk/anthropic');
+      const { text } = await generateText({
+        model: anthropic('claude-3-5-sonnet-latest'),
+        system: systemPrompt,
+        prompt,
+      });
+      rawText = text;
+
+    } else if (llm === 'grok') {
+      // 🔥 Grok (xAI)
+      const { xai } = await import('@ai-sdk/xai');
+      const { text } = await generateText({
+        model: xai('grok-4'),
+        system: systemPrompt,
+        prompt,
+      });
+      rawText = text;
+
     } else {
-      return NextResponse.json(
-        { error: `${llm} 엔진은 아직 준비되지 않았습니다.` },
-        { status: 400, headers }
-      );
+      throw new Error('지원되지 않는 엔진');
     }
 
     const cleaned = cleanJson(rawText);
@@ -138,35 +171,19 @@ export async function POST(req: NextRequest) {
 
     const pdfBytes = await generatePdf(enriched);
 
-    const zip = new JSZip();
-    zip.file('report.json', JSON.stringify(enriched, null, 2));
-    zip.file('report.pdf', pdfBytes);
-
-    const zipBytes = await zip.generateAsync({ type: 'uint8array' });
-
     const baseName = `${user.id}/${(ticker || 'report')}-${Date.now()}`;
-
-    const zipPath = `${baseName}.zip`;
     const pdfPath = `${baseName}.pdf`;
-
-    // Storage 업로드
-    await supabase.storage.from('reports').upload(zipPath, zipBytes, {
-      contentType: 'application/zip',
-      upsert: true,
-    });
 
     await supabase.storage.from('reports').upload(pdfPath, pdfBytes, {
       contentType: 'application/pdf',
       upsert: true,
     });
 
-    // 🔥 핵심: DB에 pdf_path 저장
     await supabase.from('reports').insert({
       user_id: user.id,
       ticker,
       region: market,
       pdf_path: pdfPath,
-      notebook_zip_path: zipPath,
     });
 
     const { data: pdfUrlData } = supabase.storage
