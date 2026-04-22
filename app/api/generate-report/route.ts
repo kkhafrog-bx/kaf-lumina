@@ -5,8 +5,6 @@ import { google } from '@ai-sdk/google';
 import JSZip from 'jszip';
 import { PDFDocument } from 'pdf-lib';
 import fontkit from '@pdf-lib/fontkit';
-import fs from 'fs';
-import path from 'path';
 
 import { createSupabaseServerClient } from '@/lib/supabase/server';
 import { US_PROMPT, KR_PROMPT } from '@/lib/prompts';
@@ -14,7 +12,7 @@ import { insertImagesIntoReport } from '@/lib/imageUtils';
 
 export const runtime = 'nodejs';
 
-const GEMINI_MODEL = 'gemini-2.5-flash';
+const DEFAULT_MODEL = 'gemini-2.5-flash';
 
 // ================= JSON 정리 =================
 function cleanJson(text: string): string {
@@ -31,10 +29,8 @@ async function generatePdf(report: any) {
   const pdfDoc = await PDFDocument.create();
   pdfDoc.registerFontkit(fontkit);
 
-  // 🔥 로컬 폰트 로드 (핵심 수정)
-  const fontPath = path.join(process.cwd(), 'public/fonts/NotoSansKR-Regular.ttf');
-  const fontBytes = fs.readFileSync(fontPath);
-
+  const fontUrl = `${process.env.NEXT_PUBLIC_BASE_URL}/fonts/NotoSansKR-Regular.ttf`;
+  const fontBytes = await fetch(fontUrl).then((res) => res.arrayBuffer());
   const font = await pdfDoc.embedFont(fontBytes);
 
   const pageWidth = 595;
@@ -64,28 +60,9 @@ async function generatePdf(report: any) {
     y -= lineHeight;
   };
 
-  const wrapText = (text: string, maxChars = 90) => {
-    const words = text.split(' ');
-    let lines: string[] = [];
-    let current = '';
+  const fullText = JSON.stringify(report, null, 2).split('\n');
 
-    for (const word of words) {
-      if ((current + word).length > maxChars) {
-        lines.push(current);
-        current = word + ' ';
-      } else {
-        current += word + ' ';
-      }
-    }
-
-    if (current) lines.push(current);
-    return lines;
-  };
-
-  const fullText = JSON.stringify(report, null, 2);
-  const lines = wrapText(fullText);
-
-  for (const line of lines) {
+  for (const line of fullText) {
     drawLine(line);
   }
 
@@ -98,13 +75,23 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { ticker, companyName } = body;
+    const { ticker, companyName, engine } = body;
+
+    if (!ticker && !companyName) {
+      return NextResponse.json(
+        { error: '티커 또는 회사명이 필요합니다.' },
+        { status: 400, headers }
+      );
+    }
 
     const { data } = await supabase.auth.getUser();
     const user = data?.user;
 
     if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401, headers }
+      );
     }
 
     const market =
@@ -113,7 +100,9 @@ export async function POST(req: NextRequest) {
         : 'US';
 
     const systemPrompt = market === 'US' ? US_PROMPT : KR_PROMPT;
-    const model = google(GEMINI_MODEL);
+
+    // 🔥 핵심: engine 적용 (없으면 기본값)
+    const model = google(engine || DEFAULT_MODEL);
 
     const { text } = await generateText({
       model,
@@ -128,16 +117,20 @@ Return ONLY valid JSON.
     const cleaned = cleanJson(text);
     const reportJson = JSON.parse(cleaned);
 
+    // 이미지 삽입 유지
+    const enriched = await insertImagesIntoReport(reportJson);
+
     // ================= PDF =================
-    const pdfBytes = await generatePdf(reportJson);
+    const pdfBytes = await generatePdf(enriched);
 
     // ================= ZIP =================
     const zip = new JSZip();
-    zip.file('report.json', JSON.stringify(reportJson, null, 2));
+    zip.file('report.json', JSON.stringify(enriched, null, 2));
     zip.file('report.pdf', pdfBytes);
 
     const zipBytes = await zip.generateAsync({ type: 'uint8array' });
 
+    // ================= Storage =================
     const baseName = `${user.id}/${(ticker || 'report')}-${Date.now()}`;
 
     const zipPath = `${baseName}.zip`;
@@ -153,24 +146,38 @@ Return ONLY valid JSON.
       upsert: true,
     });
 
-    const { data: zipUrlData } = supabase.storage
-      .from('reports')
-      .getPublicUrl(zipPath);
+    // 🔥 DB 저장 (pdf_path 반드시 포함)
+    await supabase.from('reports').insert({
+      user_id: user.id,
+      ticker,
+      region: market,
+      pdf_path: pdfPath,
+      notebook_zip_path: zipPath,
+    });
 
+    // ================= URL =================
     const { data: pdfUrlData } = supabase.storage
       .from('reports')
       .getPublicUrl(pdfPath);
 
+    const { data: zipUrlData } = supabase.storage
+      .from('reports')
+      .getPublicUrl(zipPath);
+
     return NextResponse.json(
       {
-        report: reportJson,
+        report: enriched,
         pdfUrl: pdfUrlData.publicUrl,
         zipUrl: zipUrlData.publicUrl,
       },
       { headers }
     );
   } catch (err: any) {
-    console.error('🚨 ERROR:', err);
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    console.error('🚨 generate-report failed:', err);
+
+    return NextResponse.json(
+      { error: err.message },
+      { status: 500 }
+    );
   }
 }
