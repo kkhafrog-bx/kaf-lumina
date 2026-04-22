@@ -12,7 +12,12 @@ import { insertImagesIntoReport } from '@/lib/imageUtils';
 
 export const runtime = 'nodejs';
 
-const DEFAULT_MODEL = 'gemini-2.5-flash';
+// 🔥 Gemini fallback 순서 (최신 → 구버전)
+const GEMINI_MODELS = [
+  'gemini-2.5-flash',
+  'gemini-1.5-pro',
+  'gemini-1.5-flash'
+];
 
 // ================= JSON 정리 =================
 function cleanJson(text: string): string {
@@ -22,6 +27,32 @@ function cleanJson(text: string): string {
     .replace(/^```\s*/i, '')
     .replace(/```\s*$/i, '')
     .trim();
+}
+
+// ================= Gemini 자동 fallback =================
+async function generateWithGeminiFallback(systemPrompt: string, prompt: string) {
+  let lastError: any;
+
+  for (const modelName of GEMINI_MODELS) {
+    try {
+      console.log('🚀 시도 모델:', modelName);
+
+      const { text } = await generateText({
+        model: google(modelName),
+        system: systemPrompt,
+        prompt,
+      });
+
+      console.log('✅ 성공 모델:', modelName);
+      return text;
+
+    } catch (err) {
+      console.error('❌ 실패 모델:', modelName, err);
+      lastError = err;
+    }
+  }
+
+  throw new Error('모든 Gemini 모델 실패: ' + lastError?.message);
 }
 
 // ================= PDF 생성 =================
@@ -60,9 +91,9 @@ async function generatePdf(report: any) {
     y -= lineHeight;
   };
 
-  const fullText = JSON.stringify(report, null, 2).split('\n');
+  const lines = JSON.stringify(report, null, 2).split('\n');
 
-  for (const line of fullText) {
+  for (const line of lines) {
     drawLine(line);
   }
 
@@ -75,7 +106,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { ticker, companyName, engine } = body;
+    const { ticker, companyName } = body;
 
     if (!ticker && !companyName) {
       return NextResponse.json(
@@ -101,23 +132,19 @@ export async function POST(req: NextRequest) {
 
     const systemPrompt = market === 'US' ? US_PROMPT : KR_PROMPT;
 
-    // 🔥 핵심: engine 적용 (없으면 기본값)
-    const model = google(engine || DEFAULT_MODEL);
-
-    const { text } = await generateText({
-      model,
-      system: systemPrompt,
-      prompt: `
+    // 🔥 Gemini fallback 실행
+    const rawText = await generateWithGeminiFallback(
+      systemPrompt,
+      `
 Company: ${ticker || companyName}
 
 Return ONLY valid JSON.
-`,
-    });
+`
+    );
 
-    const cleaned = cleanJson(text);
+    const cleaned = cleanJson(rawText);
     const reportJson = JSON.parse(cleaned);
 
-    // 이미지 삽입 유지
     const enriched = await insertImagesIntoReport(reportJson);
 
     // ================= PDF =================
@@ -146,7 +173,7 @@ Return ONLY valid JSON.
       upsert: true,
     });
 
-    // 🔥 DB 저장 (pdf_path 반드시 포함)
+    // ================= DB =================
     await supabase.from('reports').insert({
       user_id: user.id,
       ticker,
@@ -160,15 +187,10 @@ Return ONLY valid JSON.
       .from('reports')
       .getPublicUrl(pdfPath);
 
-    const { data: zipUrlData } = supabase.storage
-      .from('reports')
-      .getPublicUrl(zipPath);
-
     return NextResponse.json(
       {
         report: enriched,
         pdfUrl: pdfUrlData.publicUrl,
-        zipUrl: zipUrlData.publicUrl,
       },
       { headers }
     );
