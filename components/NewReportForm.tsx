@@ -5,15 +5,15 @@ import DownloadButtons from './DownloadButtons';
 
 export default function NewReportForm() {
   const [loading, setLoading] = useState(false);
-  const [pdfUrl, setPdfUrl] = useState<string>('');
-  const [zipUrl, setZipUrl] = useState<string>('');
-  const [error, setError] = useState<string>('');
+  const [pdfUrl, setPdfUrl] = useState<string | null>(null);
+  const [zipUrl, setZipUrl] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const handleGenerate = async () => {
     setLoading(true);
-    setError('');
-    setPdfUrl('');
-    setZipUrl('');
+    setError(null);
+    setPdfUrl(null);
+    setZipUrl(null);
 
     try {
       const res = await fetch('/api/generate-report', {
@@ -21,23 +21,33 @@ export default function NewReportForm() {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          ticker: '005930',
-        }),
+        body: JSON.stringify({ ticker: '005930' }),
       });
 
-      const data = await res.json();
+      let data: any = null;
 
-      if (!res.ok) {
-        throw new Error(data.error || '생성 실패');
+      try {
+        data = await res.json();
+      } catch {
+        throw new Error('응답 JSON 파싱 실패');
       }
 
-      // 🔥 핵심: 여기서 반드시 세팅
-      setPdfUrl(data.pdfUrl || '');
-      setZipUrl(data.zipUrl || '');
+      if (!res.ok) {
+        throw new Error(data?.error || '서버 오류');
+      }
+
+      // 🔥 안전하게 존재 확인
+      if (typeof data?.pdfUrl === 'string') {
+        setPdfUrl(data.pdfUrl);
+      }
+
+      if (typeof data?.zipUrl === 'string') {
+        setZipUrl(data.zipUrl);
+      }
+
     } catch (err: any) {
-      console.error(err);
-      setError(err.message || '에러 발생');
+      console.error('generate error:', err);
+      setError(err?.message || '에러 발생');
     } finally {
       setLoading(false);
     }
@@ -56,8 +66,13 @@ export default function NewReportForm() {
         <div className="text-red-400 text-sm">{error}</div>
       )}
 
-      {/* 🔥 버튼 렌더링 */}
-      <DownloadButtons pdfUrl={pdfUrl} zipUrl={zipUrl} />
+      {/* 🔥 안전 렌더링 */}
+      {(pdfUrl || zipUrl) && (
+        <DownloadButtons
+          pdfUrl={pdfUrl || ''}
+          zipUrl={zipUrl || ''}
+        />
+      )}
     </div>
   );
 }
