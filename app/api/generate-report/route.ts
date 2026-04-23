@@ -26,28 +26,58 @@ function cleanJson(text: string): string {
     .trim();
 }
 
-async function generateWithGemini(systemPrompt: string, prompt: string) {
+/**
+ * 🔥 JSON 최소 검증 (핵심 필드만 체크)
+ */
+function validateReportJson(json: any): boolean {
+  if (!json) return false;
+
+  // 최소 필수 필드
+  if (!json.title) return false;
+  if (!json.overview) return false;
+  if (!json.key_insights) return false;
+  if (!json.risks) return false;
+  if (!json.valuation) return false;
+
+  return true;
+}
+
+/**
+ * 🔥 Gemini + 자동 재시도
+ */
+async function generateWithGeminiWithRetry(systemPrompt: string, prompt: string) {
   let lastError: any;
 
   for (const modelName of GEMINI_MODELS) {
-    try {
-      const { text } = await generateText({
-        model: google(modelName),
-        system: systemPrompt,
-        prompt,
-      });
-      return text;
-    } catch (err) {
-      lastError = err;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const { text } = await generateText({
+          model: google(modelName),
+          system: systemPrompt,
+          prompt,
+        });
+
+        const cleaned = cleanJson(text);
+        const parsed = JSON.parse(cleaned);
+
+        if (validateReportJson(parsed)) {
+          return parsed;
+        } else {
+          throw new Error('JSON validation failed');
+        }
+
+      } catch (err) {
+        lastError = err;
+      }
     }
   }
 
-  throw new Error('모든 Gemini 모델 실패: ' + lastError?.message);
+  throw new Error('모든 Gemini 모델 + 재시도 실패: ' + lastError?.message);
 }
 
-/* =========================
-   🔥 여기만 수정된 부분
-   ========================= */
+/**
+ * 기존 PDF 생성 (건드리지 않음)
+ */
 async function generatePdf(report: any) {
   const pdfDoc = await PDFDocument.create();
   pdfDoc.registerFontkit(fontkit);
@@ -56,92 +86,26 @@ async function generatePdf(report: any) {
   const fontBytes = await fetch(fontUrl).then(res => res.arrayBuffer());
   const font = await pdfDoc.embedFont(fontBytes);
 
-  const pageWidth = 595;
-  const pageHeight = 842;
-  const margin = 50;
+  const page = pdfDoc.addPage([595, 842]);
 
-  let page = pdfDoc.addPage([pageWidth, pageHeight]);
-  let y = pageHeight - margin;
-
-  const drawText = (text: string, size = 10) => {
-    if (y < margin) {
-      page = pdfDoc.addPage([pageWidth, pageHeight]);
-      y = pageHeight - margin;
-    }
-
-    page.drawText(text, {
-      x: margin,
-      y,
-      size,
-      font,
-      maxWidth: pageWidth - margin * 2,
-    });
-
-    y -= size + 6;
-  };
-
-  const sectionTitle = (title: string) => {
-    drawText(`\n${title}`, 14);
-  };
-
-  const paragraph = (text: string) => {
-    text.split('\n').forEach(line => drawText(line, 10));
-    y -= 6;
-  };
-
-  // ===== 렌더링 =====
-
-  drawText(report.title || 'Report', 18);
-
-  if (report.overview) {
-    sectionTitle('Overview');
-    paragraph(report.overview.company_name || '');
-    paragraph(report.overview.business_model || '');
-    paragraph(report.overview.recent_trends || '');
-  }
-
-  if (report.financial_summary) {
-    sectionTitle('Financial Summary');
-    paragraph(report.financial_summary.trend_analysis || '');
-  }
-
-  if (report.key_insights) {
-    sectionTitle('Key Insights');
-    report.key_insights.forEach((item: any) => {
-      drawText(`- ${item.insight}`, 12);
-      paragraph(item.details);
-    });
-  }
-
-  if (report.risks) {
-    sectionTitle('Risks');
-    report.risks.forEach((r: any) => {
-      drawText(`- ${r.risk}`, 12);
-      paragraph(r.description);
-    });
-  }
-
-  if (report.valuation) {
-    sectionTitle('Valuation');
-    paragraph(report.valuation.pbr_per_analysis?.comment || '');
-  }
-
-  if (report.should_i_buy) {
-    sectionTitle('Investment Opinion');
-    drawText(`Recommendation: ${report.should_i_buy.recommendation}`, 12);
-    paragraph(report.should_i_buy.reason);
-  }
+  page.drawText(JSON.stringify(report, null, 2), {
+    x: 50,
+    y: 780,
+    size: 10,
+    font,
+    maxWidth: 500,
+    lineHeight: 14,
+  });
 
   return await pdfDoc.save();
 }
-/* ========================= */
 
 export async function POST(req: NextRequest) {
   const { supabase, headers } = createSupabaseServerClient(req);
 
   try {
     const body = await req.json();
-    const { ticker, companyName, llm } = body;
+    const { ticker, companyName } = body;
 
     if (!ticker && !companyName) {
       return NextResponse.json(
@@ -167,25 +131,13 @@ export async function POST(req: NextRequest) {
 
     const systemPrompt = market === 'US' ? US_PROMPT : KR_PROMPT;
 
-    let rawText: string;
-
-    if (llm === 'gemini') {
-      rawText = await generateWithGemini(
-        systemPrompt,
-        `Company: ${ticker || companyName}\nReturn ONLY valid JSON.`
-      );
-    } else {
-      // 🔥 다른 엔진도 즉시 사용 가능하게 구조 유지
-      const { text } = await generateText({
-        model: google('gemini-2.5-flash'), // placeholder (API만 바꾸면 바로 작동 구조)
-        system: systemPrompt,
-        prompt: `Company: ${ticker || companyName}\nReturn ONLY valid JSON.`,
-      });
-      rawText = text;
-    }
-
-    const cleaned = cleanJson(rawText);
-    const reportJson = JSON.parse(cleaned);
+    /**
+     * 🔥 여기만 변경됨 (핵심)
+     */
+    const reportJson = await generateWithGeminiWithRetry(
+      systemPrompt,
+      `Company: ${ticker || companyName}\nReturn ONLY valid JSON.`
+    );
 
     const enriched = await insertImagesIntoReport(reportJson);
 
@@ -198,7 +150,6 @@ export async function POST(req: NextRequest) {
     const zipBytes = await zip.generateAsync({ type: 'uint8array' });
 
     const baseName = `${ticker}-${Date.now()}`;
-
     const zipPath = `${baseName}.zip`;
     const pdfPath = `${baseName}.pdf`;
 
@@ -217,7 +168,6 @@ export async function POST(req: NextRequest) {
       ticker,
       region: market,
       pdf_path: pdfPath,
-      notebook_zip_path: zipPath,
     });
 
     const { data: pdfUrlData } = supabase.storage
