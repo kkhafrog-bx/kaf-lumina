@@ -171,7 +171,7 @@ export async function POST(req: NextRequest) {
 
     const pdfBytes = await generatePdf(enriched);
 
-    const baseName = `${ticker}-${Date.now()}`;
+    const baseName = `${user.id}/${(ticker || 'report')}-${Date.now()}`;
     const pdfPath = `${baseName}.pdf`;
 
     await supabase.storage.from('reports').upload(pdfPath, pdfBytes, {
