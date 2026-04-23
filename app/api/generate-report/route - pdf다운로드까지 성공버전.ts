@@ -3,7 +3,7 @@ import { NextResponse } from 'next/server';
 import { generateText } from 'ai';
 import { google } from '@ai-sdk/google';
 import JSZip from 'jszip';
-import { PDFDocument, rgb } from 'pdf-lib';
+import { PDFDocument } from 'pdf-lib';
 import fontkit from '@pdf-lib/fontkit';
 
 import { createSupabaseServerClient } from '@/lib/supabase/server';
@@ -12,12 +12,14 @@ import { insertImagesIntoReport } from '@/lib/imageUtils';
 
 export const runtime = 'nodejs';
 
+// 🔥 Gemini 자동 fallback
 const GEMINI_MODELS = [
   'gemini-2.5-flash',
+  'gemini-2.5-flash-lite',
   'gemini-1.5-pro',
-  'gemini-1.5-flash',
 ];
 
+// ================= JSON 정리 =================
 function cleanJson(text: string): string {
   return text
     .trim()
@@ -27,6 +29,7 @@ function cleanJson(text: string): string {
     .trim();
 }
 
+// ================= Gemini 자동 선택 =================
 async function generateWithGemini(systemPrompt: string, prompt: string) {
   let lastError: any;
 
@@ -46,7 +49,7 @@ async function generateWithGemini(systemPrompt: string, prompt: string) {
   throw new Error('모든 Gemini 모델 실패: ' + lastError?.message);
 }
 
-// ================= PDF 개선 버전 =================
+// ================= PDF =================
 async function generatePdf(report: any) {
   const pdfDoc = await PDFDocument.create();
   pdfDoc.registerFontkit(fontkit);
@@ -58,111 +61,31 @@ async function generatePdf(report: any) {
   const pageWidth = 595;
   const pageHeight = 842;
   const margin = 50;
-
-  const titleSize = 16;
-  const sectionSize = 13;
-  const textSize = 10;
-
+  const fontSize = 10;
   const lineHeight = 16;
-  const maxWidth = pageWidth - margin * 2;
 
   let page = pdfDoc.addPage([pageWidth, pageHeight]);
   let y = pageHeight - margin;
 
-  const newPage = () => {
-    page = pdfDoc.addPage([pageWidth, pageHeight]);
-    y = pageHeight - margin;
-  };
-
-  const drawText = (text: string, size = textSize, bold = false) => {
-    if (y < margin) newPage();
+  const draw = (text: string) => {
+    if (y < margin) {
+      page = pdfDoc.addPage([pageWidth, pageHeight]);
+      y = pageHeight - margin;
+    }
 
     page.drawText(text, {
       x: margin,
       y,
-      size,
+      size: fontSize,
       font,
-      maxWidth,
-      color: bold ? rgb(0, 0, 0) : rgb(0.2, 0.2, 0.2),
+      maxWidth: pageWidth - margin * 2,
     });
 
     y -= lineHeight;
   };
 
-  const drawDivider = () => {
-    if (y < margin) newPage();
-
-    page.drawLine({
-      start: { x: margin, y },
-      end: { x: pageWidth - margin, y },
-      thickness: 1,
-      color: rgb(0.7, 0.7, 0.7),
-    });
-
-    y -= lineHeight;
-  };
-
-  const wrapText = (text: string, maxChars = 90) => {
-    const words = text.split(' ');
-    let lines: string[] = [];
-    let current = '';
-
-    for (const word of words) {
-      if ((current + word).length > maxChars) {
-        lines.push(current);
-        current = word + ' ';
-      } else {
-        current += word + ' ';
-      }
-    }
-
-    if (current) lines.push(current);
-    return lines;
-  };
-
-  const drawParagraph = (text: string) => {
-    const lines = wrapText(text);
-    lines.forEach(line => drawText(line));
-  };
-
-  const drawSection = (title: string, content: any) => {
-    drawText(``, sectionSize);
-    drawText(title, sectionSize, true);
-    drawDivider();
-
-    if (!content) {
-      drawText('내용 없음');
-      return;
-    }
-
-    if (typeof content === 'string') {
-      drawParagraph(content);
-    } else if (typeof content === 'object') {
-      for (const key in content) {
-        drawText(`• ${key}`, textSize, true);
-
-        const value = content[key];
-        if (typeof value === 'string') {
-          drawParagraph(value);
-        } else {
-          drawParagraph(JSON.stringify(value, null, 2));
-        }
-      }
-    }
-  };
-
-  // ================= 실제 출력 =================
-
-  drawText('LUMINA INVESTMENT REPORT', titleSize, true);
-  drawDivider();
-
-  drawSection('Company', report.company);
-  drawSection('Summary', report.summary);
-  drawSection('Business', report.business);
-  drawSection('Financials', report.financials);
-  drawSection('Valuation', report.valuation);
-  drawSection('Risk', report.risk);
-  drawSection('Conclusion', report.conclusion);
+  const lines = JSON.stringify(report, null, 2).split('\n');
+  lines.forEach(draw);
 
   return await pdfDoc.save();
 }
@@ -201,16 +124,44 @@ export async function POST(req: NextRequest) {
 
     let rawText: string;
 
+    const prompt = `Company: ${ticker || companyName}\nReturn ONLY valid JSON.`;
+
+    // ================= 🔥 엔진 분기 =================
     if (llm === 'gemini') {
-      rawText = await generateWithGemini(
-        systemPrompt,
-        `Company: ${ticker || companyName}\nReturn ONLY valid JSON.`
-      );
+      rawText = await generateWithGemini(systemPrompt, prompt);
+
+    } else if (llm === 'gpt') {
+      // 🔥 GPT (OpenAI)
+      const { openai } = await import('@ai-sdk/openai');
+      const { text } = await generateText({
+        model: openai('gpt-4o'),
+        system: systemPrompt,
+        prompt,
+      });
+      rawText = text;
+
+    } else if (llm === 'claude') {
+      // 🔥 Claude (Anthropic)
+      const { anthropic } = await import('@ai-sdk/anthropic');
+      const { text } = await generateText({
+        model: anthropic('claude-3-5-sonnet-latest'),
+        system: systemPrompt,
+        prompt,
+      });
+      rawText = text;
+
+    } else if (llm === 'grok') {
+      // 🔥 Grok (xAI)
+      const { xai } = await import('@ai-sdk/xai');
+      const { text } = await generateText({
+        model: xai('grok-4'),
+        system: systemPrompt,
+        prompt,
+      });
+      rawText = text;
+
     } else {
-      return NextResponse.json(
-        { error: `${llm} 엔진은 아직 준비되지 않았습니다.` },
-        { status: 400, headers }
-      );
+      throw new Error('지원되지 않는 엔진');
     }
 
     const cleaned = cleanJson(rawText);
@@ -220,21 +171,8 @@ export async function POST(req: NextRequest) {
 
     const pdfBytes = await generatePdf(enriched);
 
-    const zip = new JSZip();
-    zip.file('report.json', JSON.stringify(enriched, null, 2));
-    zip.file('report.pdf', pdfBytes);
-
-    const zipBytes = await zip.generateAsync({ type: 'uint8array' });
-
     const baseName = `${ticker}-${Date.now()}`;
-
-    const zipPath = `${baseName}.zip`;
     const pdfPath = `${baseName}.pdf`;
-
-    await supabase.storage.from('reports').upload(zipPath, zipBytes, {
-      contentType: 'application/zip',
-      upsert: true,
-    });
 
     await supabase.storage.from('reports').upload(pdfPath, pdfBytes, {
       contentType: 'application/pdf',
@@ -246,7 +184,6 @@ export async function POST(req: NextRequest) {
       ticker,
       region: market,
       pdf_path: pdfPath,
-      json_path: zipPath,
     });
 
     const { data: pdfUrlData } = supabase.storage
