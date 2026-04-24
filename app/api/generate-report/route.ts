@@ -123,70 +123,60 @@ export async function POST(req: NextRequest) {
     const systemPrompt = market === 'US' ? US_PROMPT : KR_PROMPT;
 
     /**
-     * 🔥 핵심 수정 (프롬프트 강화)
+     * 🔥 프롬프트만 교체됨 (분량 + 숫자 강제)
      */
     const reportJson = await generateWithGeminiWithRetry(
       systemPrompt,
       `
-You are a senior equity research analyst.
+Company: ${ticker || companyName}
 
-Analyze the company: ${ticker || companyName}
+Return ONLY valid JSON.
+
+You must generate a FULL institutional-grade equity research report.
 
 STRICT REQUIREMENTS:
-- Output ONLY valid JSON
-- No explanations
-- No markdown
-- No omissions
-- All fields must be filled with HIGH DEPTH
 
-MANDATORY QUALITY:
-- Every section must contain REAL analysis, not generic text
-- Use numbers, trends, cause-effect logic
-- Insights must include evidence + implication
-- Avoid vague phrases like "strong", "good", "leading"
+[Length Enforcement]
+- Total output MUST exceed 5,000 words
+- Each major section MUST be at least 500 words
+- Do NOT summarize under any condition
 
-REQUIRED STRUCTURE:
+[Data Enforcement]
+- Every section MUST include specific numbers (growth rates, margins, revenue, etc.)
+- If real data is uncertain, use reasonable estimates (DO NOT skip)
 
-{
-  "title": string,
+[Key Insights]
+- At least 8 insights
+- Each insight MUST be 120+ words
+- Each insight MUST include:
+  (metric → interpretation → implication)
 
-  "overview": {
-    "company_description": string (detailed),
-    "business_model": string (how money is made),
-    "recent_trends": string (with causes),
-    "competitive_position": string (vs competitors)
-  },
+[Risks]
+- At least 6 risks
+- Each risk MUST be 100+ words
+- Include probability, impact, and monitoring indicators
 
-  "financials": {
-    "revenue_trend": string,
-    "profit_trend": string,
-    "cashflow_analysis": string
-  },
+[Financial Analysis]
+- Include multi-year breakdown (at least 5 years)
+- Include revenue, net income, FCF with explanation
 
-  "key_insights": [
-    {
-      "insight": string,
-      "evidence": string (numbers/data),
-      "implication": string
-    }
-  ],
+[STRICT PROHIBITIONS]
+DO NOT use vague phrases like:
+- "strong growth"
+- "market leader"
+- "well known"
 
-  "risks": [
-    {
-      "risk": string,
-      "impact": "low|medium|high",
-      "probability": "low|medium|high",
-      "reason": string
-    }
-  ],
+Replace them with DATA.
 
-  "valuation": {
-    "summary": string,
-    "relative": string,
-    "conclusion": string
-  }
-}
-`
+[JSON RULES]
+- Must be deeply structured
+- No placeholders
+- No empty fields
+- No summaries
+- Expand every field fully
+
+If output is short or shallow, it is considered FAILURE.
+      `
     );
 
     const enriched = await insertImagesIntoReport(reportJson);
