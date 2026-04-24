@@ -29,16 +29,25 @@ function cleanJson(text: string): string {
     .trim();
 }
 
+/**
+ * 🔥 JSON 최소 검증 (핵심 필드만 체크)
+ */
 function validateReportJson(json: any): boolean {
   if (!json) return false;
+
+  // 최소 필수 필드
   if (!json.title) return false;
   if (!json.overview) return false;
   if (!json.key_insights) return false;
   if (!json.risks) return false;
   if (!json.valuation) return false;
+
   return true;
 }
 
+/**
+ * 🔥 Gemini + 자동 재시도
+ */
 async function generateWithGeminiWithRetry(systemPrompt: string, prompt: string) {
   let lastError: any;
 
@@ -70,7 +79,7 @@ async function generateWithGeminiWithRetry(systemPrompt: string, prompt: string)
 }
 
 /**
- * 🔥 수정된 PDF 생성 (JSON 완전 보존 + 안전 출력)
+ * 기존 PDF 생성 (건드리지 않음)
  */
 async function generatePdf(report: any) {
   const pdfDoc = await PDFDocument.create();
@@ -80,93 +89,16 @@ async function generatePdf(report: any) {
   const fontBytes = await fetch(fontUrl).then(res => res.arrayBuffer());
   const font = await pdfDoc.embedFont(fontBytes);
 
-  const pageWidth = 595;
-  const pageHeight = 842;
-  const margin = 50;
-  const fontSize = 10;
-  const lineHeight = 14;
-  const maxWidth = pageWidth - margin * 2;
+  const page = pdfDoc.addPage([595, 842]);
 
-  let page = pdfDoc.addPage([pageWidth, pageHeight]);
-  let y = pageHeight - margin;
-
-  const drawLine = (text: string) => {
-    const lines = wrapText(text, font, fontSize, maxWidth);
-
-    for (const line of lines) {
-      if (y < margin) {
-        page = pdfDoc.addPage([pageWidth, pageHeight]);
-        y = pageHeight - margin;
-      }
-
-      page.drawText(line, {
-        x: margin,
-        y,
-        size: fontSize,
-        font,
-      });
-
-      y -= lineHeight;
-    }
-  };
-
-  const walk = (obj: any, indent = 0) => {
-    const pad = ' '.repeat(indent);
-
-    if (obj === null) {
-      drawLine(pad + 'null');
-      return;
-    }
-
-    if (typeof obj === 'string') {
-      drawLine(pad + obj);
-      return;
-    }
-
-    if (typeof obj === 'number' || typeof obj === 'boolean') {
-      drawLine(pad + String(obj));
-      return;
-    }
-
-    if (Array.isArray(obj)) {
-      obj.forEach((item, idx) => {
-        drawLine(pad + `[${idx}]`);
-        walk(item, indent + 2);
-      });
-      return;
-    }
-
-    if (typeof obj === 'object') {
-      for (const key in obj) {
-        drawLine(pad + key + ':');
-        walk(obj[key], indent + 2);
-      }
-      return;
-    }
-  };
-
-  function wrapText(text: string, font: any, size: number, maxWidth: number) {
-    const words = text.split(' ');
-    const lines: string[] = [];
-    let current = '';
-
-    for (const word of words) {
-      const testLine = current ? current + ' ' + word : word;
-      const width = font.widthOfTextAtSize(testLine, size);
-
-      if (width < maxWidth) {
-        current = testLine;
-      } else {
-        if (current) lines.push(current);
-        current = word;
-      }
-    }
-
-    if (current) lines.push(current);
-    return lines;
-  }
-
-  walk(report);
+  page.drawText(JSON.stringify(report, null, 2), {
+    x: 50,
+    y: 780,
+    size: 10,
+    font,
+    maxWidth: 500,
+    lineHeight: 14,
+  });
 
   return await pdfDoc.save();
 }
@@ -202,6 +134,9 @@ export async function POST(req: NextRequest) {
 
     const systemPrompt = market === 'US' ? US_PROMPT : KR_PROMPT;
 
+    /**
+     * 🔥 여기만 변경됨 (핵심)
+     */
     const reportJson = await generateWithGeminiWithRetry(
       systemPrompt,
       `Company: ${ticker || companyName}\nReturn ONLY valid JSON.`
