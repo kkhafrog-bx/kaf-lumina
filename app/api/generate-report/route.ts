@@ -14,7 +14,10 @@ export const runtime = 'nodejs';
 
 const GEMINI_MODELS = [
   'gemini-2.5-flash',
-  'gemini-1.5-pro',
+  'gemini-2.5-flash-lite',
+  'gemini-2.5-pro',
+  'gemini-3-flash',
+  'gemini-3.1-flash-lite',
 ];
 
 function cleanJson(text: string): string {
