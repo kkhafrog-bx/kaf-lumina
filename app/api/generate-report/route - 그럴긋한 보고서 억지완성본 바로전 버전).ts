@@ -69,6 +69,9 @@ async function generateWithGeminiWithRetry(systemPrompt: string, prompt: string)
   throw new Error('모든 Gemini 모델 + 재시도 실패: ' + lastError?.message);
 }
 
+/**
+ * 🔥 수정된 PDF 생성 (JSON 완전 보존 + 안전 출력)
+ */
 async function generatePdf(report: any) {
   const pdfDoc = await PDFDocument.create();
   pdfDoc.registerFontkit(fontkit);
@@ -77,16 +80,93 @@ async function generatePdf(report: any) {
   const fontBytes = await fetch(fontUrl).then(res => res.arrayBuffer());
   const font = await pdfDoc.embedFont(fontBytes);
 
-  const page = pdfDoc.addPage([595, 842]);
+  const pageWidth = 595;
+  const pageHeight = 842;
+  const margin = 50;
+  const fontSize = 10;
+  const lineHeight = 14;
+  const maxWidth = pageWidth - margin * 2;
 
-  page.drawText(JSON.stringify(report, null, 2), {
-    x: 50,
-    y: 780,
-    size: 10,
-    font,
-    maxWidth: 500,
-    lineHeight: 14,
-  });
+  let page = pdfDoc.addPage([pageWidth, pageHeight]);
+  let y = pageHeight - margin;
+
+  const drawLine = (text: string) => {
+    const lines = wrapText(text, font, fontSize, maxWidth);
+
+    for (const line of lines) {
+      if (y < margin) {
+        page = pdfDoc.addPage([pageWidth, pageHeight]);
+        y = pageHeight - margin;
+      }
+
+      page.drawText(line, {
+        x: margin,
+        y,
+        size: fontSize,
+        font,
+      });
+
+      y -= lineHeight;
+    }
+  };
+
+  const walk = (obj: any, indent = 0) => {
+    const pad = ' '.repeat(indent);
+
+    if (obj === null) {
+      drawLine(pad + 'null');
+      return;
+    }
+
+    if (typeof obj === 'string') {
+      drawLine(pad + obj);
+      return;
+    }
+
+    if (typeof obj === 'number' || typeof obj === 'boolean') {
+      drawLine(pad + String(obj));
+      return;
+    }
+
+    if (Array.isArray(obj)) {
+      obj.forEach((item, idx) => {
+        drawLine(pad + `[${idx}]`);
+        walk(item, indent + 2);
+      });
+      return;
+    }
+
+    if (typeof obj === 'object') {
+      for (const key in obj) {
+        drawLine(pad + key + ':');
+        walk(obj[key], indent + 2);
+      }
+      return;
+    }
+  };
+
+  function wrapText(text: string, font: any, size: number, maxWidth: number) {
+    const words = text.split(' ');
+    const lines: string[] = [];
+    let current = '';
+
+    for (const word of words) {
+      const testLine = current ? current + ' ' + word : word;
+      const width = font.widthOfTextAtSize(testLine, size);
+
+      if (width < maxWidth) {
+        current = testLine;
+      } else {
+        if (current) lines.push(current);
+        current = word;
+      }
+    }
+
+    if (current) lines.push(current);
+    return lines;
+  }
+
+  walk(report);
 
   return await pdfDoc.save();
 }
@@ -122,71 +202,9 @@ export async function POST(req: NextRequest) {
 
     const systemPrompt = market === 'US' ? US_PROMPT : KR_PROMPT;
 
-    /**
-     * 🔥 핵심 수정 (프롬프트 강화)
-     */
     const reportJson = await generateWithGeminiWithRetry(
       systemPrompt,
-      `
-You are a senior equity research analyst.
-
-Analyze the company: ${ticker || companyName}
-
-STRICT REQUIREMENTS:
-- Output ONLY valid JSON
-- No explanations
-- No markdown
-- No omissions
-- All fields must be filled with HIGH DEPTH
-
-MANDATORY QUALITY:
-- Every section must contain REAL analysis, not generic text
-- Use numbers, trends, cause-effect logic
-- Insights must include evidence + implication
-- Avoid vague phrases like "strong", "good", "leading"
-
-REQUIRED STRUCTURE:
-
-{
-  "title": string,
-
-  "overview": {
-    "company_description": string (detailed),
-    "business_model": string (how money is made),
-    "recent_trends": string (with causes),
-    "competitive_position": string (vs competitors)
-  },
-
-  "financials": {
-    "revenue_trend": string,
-    "profit_trend": string,
-    "cashflow_analysis": string
-  },
-
-  "key_insights": [
-    {
-      "insight": string,
-      "evidence": string (numbers/data),
-      "implication": string
-    }
-  ],
-
-  "risks": [
-    {
-      "risk": string,
-      "impact": "low|medium|high",
-      "probability": "low|medium|high",
-      "reason": string
-    }
-  ],
-
-  "valuation": {
-    "summary": string,
-    "relative": string,
-    "conclusion": string
-  }
-}
-`
+      `Company: ${ticker || companyName}\nReturn ONLY valid JSON.`
     );
 
     const enriched = await insertImagesIntoReport(reportJson);
