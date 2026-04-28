@@ -39,19 +39,30 @@ function validateReportJson(json: any): boolean {
   return true;
 }
 
+/**
+ * 🔥 수정된 핵심 함수 (JSON 강제 + 자동 재요청)
+ */
 async function generateWithGeminiWithRetry(systemPrompt: string, prompt: string) {
   let lastError: any;
 
   for (const modelName of GEMINI_MODELS) {
+    let currentPrompt = prompt;
+
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
         const { text } = await generateText({
           model: google(modelName),
           system: systemPrompt,
-          prompt,
+          prompt: currentPrompt,
         });
 
         const cleaned = cleanJson(text);
+
+        // 🔥 JSON 형태 빠른 검증
+        if (!cleaned.startsWith('{') || !cleaned.endsWith('}')) {
+          throw new Error('Not JSON format');
+        }
+
         const parsed = JSON.parse(cleaned);
 
         if (validateReportJson(parsed)) {
@@ -60,103 +71,32 @@ async function generateWithGeminiWithRetry(systemPrompt: string, prompt: string)
           throw new Error('JSON validation failed');
         }
 
-      } catch (err) {
+      } catch (err: any) {
         lastError = err;
+
+        // 🔥 실패 시 강제 재요청 프롬프트
+        currentPrompt = `
+Your previous response was NOT valid JSON.
+
+You MUST return ONLY valid JSON.
+NO explanation.
+NO markdown.
+NO text.
+
+Fix and return correct JSON only.
+
+Original request:
+${prompt}
+`;
       }
     }
   }
 
-  throw new Error('모든 Gemini 모델 실패: ' + lastError?.message);
+  throw new Error('모든 Gemini 모델 + 재시도 실패: ' + lastError?.message);
 }
 
 /**
- * 🔥 NEW: JSON → 읽을 수 있는 보고서 텍스트
- */
-function formatReport(report: any): string {
-  const lines: string[] = [];
-
-  const safe = (v: any) =>
-    v === null || v === undefined ? '' : String(v);
-
-  const section = (title: string) => {
-    lines.push('');
-    lines.push(`==============================`);
-    lines.push(title);
-    lines.push(`==============================`);
-  };
-
-  const add = (label: string, value: any) => {
-    if (!value) return;
-    lines.push(`${label}: ${safe(value)}`);
-  };
-
-  const addParagraph = (text: any) => {
-    if (!text) return;
-    lines.push(safe(text));
-    lines.push('');
-  };
-
-  const addList = (arr: any[], mapper: (item: any, i: number) => string) => {
-    if (!Array.isArray(arr)) return;
-    arr.forEach((item, i) => {
-      lines.push(`${i + 1}. ${mapper(item, i)}`);
-    });
-    lines.push('');
-  };
-
-  if (report.title) {
-    lines.push(report.title);
-  }
-
-  if (report.overview) {
-    section('Overview');
-    add('Company', report.overview.company_description);
-    add('Business Model', report.overview.business_model);
-    add('Recent Trends', report.overview.recent_trends);
-    add('Competitive Position', report.overview.competitive_position);
-  }
-
-  if (Array.isArray(report.key_insights)) {
-    section('Key Insights');
-    report.key_insights.forEach((ins: any, i: number) => {
-      lines.push(`${i + 1}. ${safe(ins.insight)}`);
-      addParagraph(ins.details);
-    });
-  }
-
-  if (Array.isArray(report.risks)) {
-    section('Risks');
-    report.risks.forEach((r: any, i: number) => {
-      lines.push(`${i + 1}. ${safe(r.risk)}`);
-      add('Impact', r.impact);
-      add('Probability', r.probability);
-      add('Mitigation', r.mitigation);
-      lines.push('');
-    });
-  }
-
-  if (report.valuation) {
-    section('Valuation');
-    add('DCF Price', report.valuation.dcf_derived_price);
-    add('WACC', report.valuation.wacc);
-    addParagraph(report.valuation.notes);
-  }
-
-  if (report.outlook) {
-    section('Outlook');
-    addParagraph(report.outlook);
-  }
-
-  if (report.rationale) {
-    section('Investment Thesis');
-    addParagraph(report.rationale);
-  }
-
-  return lines.join('\n');
-}
-
-/**
- * 🔥 NEW: 진짜 리포트 스타일 PDF
+ * 기존 PDF 생성 (유지)
  */
 async function generatePdf(report: any) {
   const pdfDoc = await PDFDocument.create();
@@ -166,90 +106,16 @@ async function generatePdf(report: any) {
   const fontBytes = await fetch(fontUrl).then(res => res.arrayBuffer());
   const font = await pdfDoc.embedFont(fontBytes);
 
-  const pageWidth = 595;
-  const pageHeight = 842;
-  const margin = 50;
+  const page = pdfDoc.addPage([595, 842]);
 
-  let page = pdfDoc.addPage([pageWidth, pageHeight]);
-  let y = pageHeight - margin;
-
-  const maxWidth = pageWidth - margin * 2;
-  const lineHeight = 14;
-
-  const drawLine = (text: string, size = 10) => {
-    const words = text.split(' ');
-    let line = '';
-
-    for (const word of words) {
-      const test = line + word + ' ';
-      const width = font.widthOfTextAtSize(test, size);
-
-      if (width > maxWidth) {
-        if (y < margin) {
-          page = pdfDoc.addPage([pageWidth, pageHeight]);
-          y = pageHeight - margin;
-        }
-
-        page.drawText(line, { x: margin, y, size, font });
-        y -= lineHeight;
-        line = word + ' ';
-      } else {
-        line = test;
-      }
-    }
-
-    if (line) {
-      if (y < margin) {
-        page = pdfDoc.addPage([pageWidth, pageHeight]);
-        y = pageHeight - margin;
-      }
-
-      page.drawText(line, { x: margin, y, size, font });
-      y -= lineHeight;
-    }
-  };
-
-  const text = formatReport(report);
-  const lines = text.split('\n');
-
-  if (report.title) {
-    page.drawText(report.title, {
-      x: margin,
-      y,
-      size: 18,
-      font,
-    });
-    y -= 25;
-  }
-
-  for (const line of lines) {
-    if (!line.trim()) {
-      y -= lineHeight / 2;
-      continue;
-    }
-
-    if (line.includes('====')) continue;
-
-    if (
-      line.includes('Overview') ||
-      line.includes('Insights') ||
-      line.includes('Risks') ||
-      line.includes('Valuation') ||
-      line.includes('Outlook')
-    ) {
-      y -= 10;
-      page.drawText(line, {
-        x: margin,
-        y,
-        size: 14,
-        font,
-      });
-      y -= lineHeight;
-      continue;
-    }
-
-    drawLine(line);
-  }
+  page.drawText(JSON.stringify(report, null, 2), {
+    x: 50,
+    y: 780,
+    size: 10,
+    font,
+    maxWidth: 500,
+    lineHeight: 14,
+  });
 
   return await pdfDoc.save();
 }
