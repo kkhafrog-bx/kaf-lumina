@@ -123,59 +123,53 @@ export async function POST(req: NextRequest) {
     const systemPrompt = market === 'US' ? US_PROMPT : KR_PROMPT;
 
     /**
-     * 🔥 프롬프트만 교체됨 (분량 + 숫자 강제)
+     * 🔥 안정형 + 분량 확보 + 숫자 강제 프롬프트
      */
     const reportJson = await generateWithGeminiWithRetry(
       systemPrompt,
       `
 Company: ${ticker || companyName}
 
-Return ONLY valid JSON.
+Return ONLY valid JSON. Do not include any explanation or error messages.
 
-You must generate a FULL institutional-grade equity research report.
+Generate a detailed equity research report.
 
-STRICT REQUIREMENTS:
+[Length Requirements]
+- Total output MUST exceed 2000 words
+- Each major section MUST be at least 200 words
+- Do NOT summarize
 
-[Length Enforcement]
-- Total output MUST exceed 5,000 words
-- Each major section MUST be at least 500 words
-- Do NOT summarize under any condition
-
-[Data Enforcement]
-- Every section MUST include specific numbers (growth rates, margins, revenue, etc.)
-- If real data is uncertain, use reasonable estimates (DO NOT skip)
+[Data Requirements]
+- Every section MUST include specific numerical data (growth rates, revenue, margins, etc.)
+- If exact data is unavailable, provide reasonable estimates
 
 [Key Insights]
-- At least 8 insights
-- Each insight MUST be 120+ words
-- Each insight MUST include:
-  (metric → interpretation → implication)
+- At least 6 insights
+- Each insight MUST be at least 80 words
+- Each must include:
+  metric → interpretation → implication
 
 [Risks]
-- At least 6 risks
-- Each risk MUST be 100+ words
-- Include probability, impact, and monitoring indicators
+- At least 5 risks
+- Each risk MUST be at least 80 words
+- Include probability, impact, monitoring indicators
 
-[Financial Analysis]
-- Include multi-year breakdown (at least 5 years)
-- Include revenue, net income, FCF with explanation
+[Financials]
+- Include at least 5 years of financial data
+- Include revenue, net income, and free cash flow
+- Provide explanation of trends
 
-[STRICT PROHIBITIONS]
-DO NOT use vague phrases like:
-- "strong growth"
-- "market leader"
-- "well known"
+[Strict Rules]
+- No vague expressions like:
+  "strong growth", "market leader", "well known"
+- Replace with actual data
 
-Replace them with DATA.
-
-[JSON RULES]
-- Must be deeply structured
-- No placeholders
+[JSON Rules]
+- Must be valid JSON
+- No markdown
+- No text outside JSON
 - No empty fields
-- No summaries
-- Expand every field fully
-
-If output is short or shallow, it is considered FAILURE.
+- Fully expand all fields
       `
     );
 
